@@ -16,7 +16,7 @@ fn run() -> Result<(), ScailError> {
 
     match matches.subcommand() {
         Some(("balloon_exp", sub_m)) => crate::balloon_exp::run(sub_m),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 

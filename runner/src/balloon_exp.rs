@@ -1,10 +1,13 @@
 use clap::arg;
 
-use libscail::{dir, escape_for_bash, get_user_home_dir, dump_sys_info, output::{Parametrize, Timestamp}, Login, ScailError};
+use libscail::{
+    Login, ScailError, dir, dump_sys_info, escape_for_bash, get_user_home_dir,
+    output::{Parametrize, Timestamp},
+};
 
 use serde::{Deserialize, Serialize};
 
-use spurs::{cmd, Execute, SshShell};
+use spurs::{Execute, SshShell, cmd};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
 struct Config {
@@ -28,14 +31,14 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let hostname = sub_m.get_one::<String>("hostname").unwrap();
     let username = sub_m.get_one::<String>("username").unwrap();
     let login = Login {
-	hostname: hostname.as_str(),
-	username: username.as_str(),
-	host: hostname.as_str(),
+        hostname: hostname.as_str(),
+        username: username.as_str(),
+        host: hostname.as_str(),
     };
 
     let cfg = Config {
-	exp: "balloon-exp".to_string(),
-	timestamp: Timestamp::now(),
+        exp: "balloon-exp".to_string(),
+        timestamp: Timestamp::now(),
     };
 
     run_inner(&login, &cfg)
@@ -54,9 +57,9 @@ where
 
     ushell.run(cmd!("mkdir -p {}", results_dir))?;
     ushell.run(cmd!(
-	"echo {} > {}",
-	escape_for_bash(&serde_json::to_string(&cfg)?),
-	dir!(&results_dir, &params_file)
+        "echo {} > {}",
+        escape_for_bash(&serde_json::to_string(&cfg)?),
+        dir!(&results_dir, &params_file)
     ))?;
 
     println!("RESULTS: {}", dir!(results_dir, cfg.gen_file_name("")));
@@ -76,26 +79,26 @@ where
 
     // Keep trying to connect until we succeed
     let ushell = {
-	let mut shell;
-	loop {
-	    println!("Attempting to reconnect...");
-	    shell = match SshShell::with_any_key(login.username, &login.host) {
-		Ok(s) => s,
-		Err(_) => {
-		    std::thread::sleep(std::time::Duration::from_secs(10));
-		    continue;
-		}
-	    };
-	    match shell.run(cmd!("whoami")) {
-		Ok(_) => break,
-		Err(_) => {
-		    std::thread::sleep(std::time::Duration::from_secs(10));
-		    continue;
-		}
-	    }
-	}
+        let mut shell;
+        loop {
+            println!("Attempting to reconnect...");
+            shell = match SshShell::with_any_key(login.username, &login.host) {
+                Ok(s) => s,
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    continue;
+                }
+            };
+            match shell.run(cmd!("whoami")) {
+                Ok(_) => break,
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    continue;
+                }
+            }
+        }
 
-	shell
+        shell
     };
 
     dump_sys_info(&ushell)?;
