@@ -1,11 +1,10 @@
 use clap::arg;
 
-use libscail::{dir, get_user_home_dir, dump_sys_info, output::{Parametrize, Timestamp}, Login, ScailError};
+use libscail::{dir, escape_for_bash, get_user_home_dir, dump_sys_info, output::{Parametrize, Timestamp}, Login, ScailError};
 
 use serde::{Deserialize, Serialize};
 
 use spurs::{cmd, Execute, SshShell};
-use spurs_util::escape_for_bash;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
 struct Config {

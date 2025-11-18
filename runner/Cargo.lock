@@ -442,7 +442,6 @@ dependencies = [
  "serde",
  "serde_json",
  "spurs",
- "spurs-util",
 ]
 
 [[package]]
@@ -660,7 +659,6 @@ dependencies = [
  "serde",
  "serde_json",
  "spurs",
- "spurs-util",
 ]
 
 [[package]]
@@ -768,17 +766,6 @@ dependencies = [
  "env_logger 0.6.2",
  "log",
  "ssh2",
-]
-
-[[package]]
-name = "spurs-util"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "404888795eeb92c0ea70ac83699c4e38c938d759449dddd341ce75319ad03358"
-dependencies = [
- "env_logger 0.6.2",
- "log",
- "spurs",
 ]
 
 [[package]]
