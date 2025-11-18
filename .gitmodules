@@ -1,0 +1,3 @@
+[submodule "libscail"]
+	path = libscail
+	url = git@github.com:multifacet/libscail.git
