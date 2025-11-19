@@ -8,3 +8,5 @@
 .vscode/
 
 *.o
+
+ubmks/alloc_data
