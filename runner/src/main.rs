@@ -1,21 +1,26 @@
 mod balloon_exp;
+mod setup_vms;
 
 use clap::arg;
 use libscail::{ScailError, ScailErrorType};
 
 const RESULTS_DIR: &str = "results/";
+const WKSPC_DIR: &str = "research-workspace/";
+const GUEST_KERNEL_DIR: &str = "guest-kernel/";
 
 fn run() -> Result<(), ScailError> {
     let matches = clap::Command::new("runner")
         .about("Jobserver runner application for the ephemeral memory research project")
         .arg(arg!(--print_results_path "Obselete"))
         .subcommand(crate::balloon_exp::cli_options())
+        .subcommand(crate::setup_vms::cli_options())
         .subcommand_required(true)
         .disable_version_flag(true)
         .get_matches();
 
     match matches.subcommand() {
         Some(("balloon_exp", sub_m)) => crate::balloon_exp::run(sub_m),
+        Some(("setup_vms", sub_m)) => crate::setup_vms::run(sub_m),
         _ => unreachable!(),
     }
 }
