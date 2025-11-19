@@ -7,6 +7,9 @@
 
 .vscode/
 
+*.qcow2
+*.img
+
 *.o
 
 ubmks/alloc_data

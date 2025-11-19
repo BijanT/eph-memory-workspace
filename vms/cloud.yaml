@@ -1,0 +1,11 @@
+#cloud-init
+ssh-pwauth: False
+users:
+  - name: ubuntu
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    groups: sudo
+    shell: /bin/bash
+    # We don't know the SSH key yet; placeholder for later insertion
+    ssh-authorized-keys:
+      - [SSH_KEY]

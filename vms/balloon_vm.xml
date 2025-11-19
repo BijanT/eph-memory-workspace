@@ -1,0 +1,51 @@
+<!--
+We can't determine absolute paths because they can change depending on the
+user/environment. So, we use placeholders in the form [PLACEHOLDER_NAME] that
+will be replaced with the actual paths by the scripts that use this XML file.
+-->
+<domain type="kvm">
+	<name>balloon-vm</name>
+	<memory unit="GiB">48</memory>
+	<vcpu>2</vcpu>
+	<os>
+		<type>hvm</type>
+		<kernel>[GUEST_KERNEL]</kernel>
+		<initrd>[GUEST_INITRD]</initrd>
+		<cmdline>console=ttyS0,115200n8 console=ttyS0</cmdline>
+	</os>
+	<cpu mode="host-passthrough">
+		<topology sockets="1" cores="2" threads="1"/>
+	</cpu>
+	<features>
+		<acpi/>
+	</features>
+	<clock offset="utc"/>
+	<on_poweroff>destroy</on_poweroff>
+	<on_reboot>restart</on_reboot>
+	<on_crash>destroy</on_crash>
+	<devices>
+		<emulator>[QEMU]</emulator>
+		<disk type="file" device="disk">
+			<driver name="qemu" type="qcow2" queues="4"/>
+			<source file="[GUEST_DISK_IMAGE]"/>
+			<target dev="vda" bus="virtio"/>
+		</disk>
+		<disk type="file" device="disk">
+			<driver name="qemu" type="raw" queues="4"/>
+			<source file="[CLOUD_INIT_ISO]"/>
+			<target dev="vdb" bus="virtio"/>
+			<readonly/>
+		</disk>
+		<serial type="pty">
+			<target port="0"/>
+		</serial>
+		<console type="pty">
+			<target type="serial" port="0"/>
+		</console>
+		<interface type="network">
+			<source network="default"/>
+			<model type="virtio"/>
+		</interface>
+		<memballoon mode="virtio" autodeflate="on" freePageReporting="on" />
+	</devices>
+</domain>
