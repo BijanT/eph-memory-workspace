@@ -1,8 +1,6 @@
 /// Configure fresh CloudLab machine, install dependencies, and setup VMs
-use crate::{GUEST_KERNEL_DIR, WKSPC_DIR};
-
 use clap::{ArgAction, ArgMatches, arg};
-use libscail::{GitRepo, Login, ScailError, clone_git_repo, dir, get_user_home_dir};
+use libscail::{GitRepo, Login, KernelSrc, KernelBaseConfigSource, KernelConfig, ScailError, clone_git_repo, dir, get_user_home_dir};
 use spurs::{Execute, SshShell, cmd};
 
 pub fn cli_options() -> clap::Command {
@@ -63,6 +61,17 @@ where
     install_host_dependencies(&ushell)?;
     clone_research_workspace(&ushell, cfg)?;
 
+    // The user needs to be in the KVM and libvirt groups to run VMs.
+    ushell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
+    ushell.run(cmd!("sudo usermod -aG libvirt {}", login.username))?;
+    // Reconnect to apply group changes
+    let ushell = SshShell::from_existing(&ushell)?;
+
+    setup_guest_vms(&ushell, cfg)?;
+
+    ushell.run(cmd!("virsh -c {} list --all", crate::LIBVIRT_URI))?;
+    ushell.run(cmd!("echo DONE"))?;
+
     Ok(())
 }
 
@@ -92,8 +101,13 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "flex",
         "libnuma-dev",
         "cgroup-tools",
+        "cloud-utils",
+        "libvirt-daemon-system",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
+
+    // AppArmor may interfere with some experiments, so uninstall it.
+    ushell.run(cmd!("sudo apt remove -y apparmor"))?;
 
     libscail::install_rust(&ushell)?;
 
@@ -103,7 +117,7 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
 fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
     const SUBMODULES: &[&str] = &["libscail"];
     let user_home = get_user_home_dir(ushell)?;
-    let wkspc_dir = dir!(user_home, WKSPC_DIR);
+    let wkspc_dir = dir!(user_home, crate::WKSPC_DIR);
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
     let branch = cfg.wkspc_branch;
@@ -121,10 +135,157 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
 
 fn setup_guest_vms(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
     let user_home = get_user_home_dir(ushell)?;
-    let guest_kernel_dir = dir!(user_home, GUEST_KERNEL_DIR);
+    // Directory that contains the files used to define the VMs
+    let vm_info_dir = dir!(&user_home, crate::WKSPC_DIR, "vms");
+    // Directory to store VM disk images
+    let imgs_dir = dir!(&user_home, crate::IMGS_DIR);
+    // Directory to store the complete VM domain XML files
+    let domains_dir = dir!(&user_home, crate::DOMAINS_DIR);
+    // List of VM's to setup
+    let vms_list = ["balloon_vm"];
+    // Strings to replace in the domain XML templates
+    let template_replace_from = [
+        "\\[GUEST_KERNEL\\]",
+        "\\[GUEST_INITRD\\]",
+        "\\[QEMU\\]",
+        "\\[GUEST_DISK_IMAGE\\]",
+        "\\[CLOUD_INIT_IMAGE\\]"
+    ];
+
+    let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
+    let qemu_path = "/usr/bin/qemu-system-x86_64";
+    let guest_kernel_bin = build_guest_kernel(ushell, &user_home, cfg)?;
+
+    ushell.run(cmd!("mkdir -p {}", imgs_dir))?;
+    ushell.run(cmd!("mkdir -p {}", domains_dir))?;
+
+    let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
+
+    // Do setup for each VM
+    for vm_name in vms_list.iter() {
+        // The domain template file for this VM
+        let domain_template_path = dir!(&vm_info_dir, format!("{}.xml", vm_name));
+        // The final domain XML file for this VM
+        let domain_xml_path = dir!(&domains_dir, format!("{}.xml", vm_name));
+
+        // Create the VM disk image
+        let ubuntu_img_path = create_ubuntu_img(ushell, &imgs_dir, vm_name)?;
+
+        // Now that we have all the files we need for the VM, we can create the domain XML
+        let template_replace_to = [
+            &guest_kernel_bin,
+            &initramfs_path,
+            qemu_path,
+            &ubuntu_img_path,
+            &cloud_init_img_path,
+        ];
+        let sed_cmd = gen_sed_replace_cmd(&template_replace_from, &template_replace_to);
+        ushell.run(cmd!(
+            "sed '{}' {} | tee {}",
+            sed_cmd,
+            domain_template_path,
+            domain_xml_path
+        ))?;
+
+        // Undefine any existing VM with the same name
+        ushell.run(cmd!("virsh -c {} undefine {}", crate::LIBVIRT_URI, vm_name).allow_error())?;
+        // Define the VM using the generated domain XML
+        ushell.run(cmd!("virsh -c {} define {}", crate::LIBVIRT_URI, domain_xml_path))?;
+    }
+
+    Ok(())
+}
+
+fn create_cloud_init_img(
+    ushell: &SshShell,
+    user_home: &str,
+    vm_info_dir: &str,
+    imgs_dir: &str,
+) -> Result<String, ScailError> {
+    let cloud_init_iso_path = dir!(imgs_dir, "cloud_init.iso");
+    let user_data_template_path = dir!(vm_info_dir, "cloud.yaml");
+    let user_data_path = dir!("/tmp", "cloud-user-data.yaml");
+    let net_data_path = dir!(vm_info_dir, "cloud-net.yaml");
+
+    // Replace the SSH public key placeholder in the user data template file
+    // with all of the keys in the remote's ~/.ssh/authorized_keys file.
+    // Valid keys in the file are of the format "ssh-<key type> <key> <comment>"
+    let ssh_keys = ushell.run(cmd!("cat {}/.ssh/authorized_keys", user_home))?
+        .stdout
+        .lines()
+        .filter(|line| line.trim().starts_with("ssh"))
+        .collect::<Vec<&str>>()
+        .join("\\n      - ");
+    ushell.run(cmd!(
+        "sed 's|\\[SSH_KEY\\]|{}|g' {} | tee {}",
+        ssh_keys,
+        user_data_template_path,
+        user_data_path
+    ))?;
+
+    // Validate the generated user data file
+    ushell.run(cmd!("cloud-init schema -c {}", user_data_path))?;
+
+    // Delete existing cloud init ISO if it exists
+    ushell.run(cmd!("rm -f {}", cloud_init_iso_path))?;
+    ushell.run(cmd!(
+        "cloud-localds -v --network-config={} {} {}",
+        net_data_path,
+        cloud_init_iso_path,
+        user_data_path
+    ))?;
+
+    Ok(cloud_init_iso_path)
+}
+
+/// Given a list of strings to replace in a file and a list of their replacements in order,
+/// return a `sed` command that performs all the replacements.
+fn gen_sed_replace_cmd(replace_from: &[&str], replace_to: &[&str]) -> String {
+    let mut sed_cmd = String::new();
+    for (from, to) in replace_from.iter().zip(replace_to.iter()) {
+        sed_cmd.push_str(&format!("s|{}|{}|g;", from, to));
+    }
+    sed_cmd
+}
+
+fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str, vm_name: &str) -> Result<String, ScailError> {
+    let base_img_path = dir!(imgs_dir, "ubuntu_base.qcow2");
+    let img_path = dir!(imgs_dir, format!("{}.qcow2", vm_name));
+    let ubuntu_img_url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img";
+
+    // Download the base Ubuntu image if it does not already exist
+    if !libscail::file_exists(ushell, &base_img_path)? {
+        ushell.run(cmd!(
+            "wget -O {} {}",
+            base_img_path,
+            ubuntu_img_url
+        ))?;
+    }
+
+    // Delete any existing image for this VM
+    ushell.run(cmd!("rm -f {}", img_path))?;
+
+    // Create a copy of the base image for this VM
+    ushell.run(cmd!(
+        "cp {} {}",
+        base_img_path,
+        img_path
+    ))?;
+
+    // Increase the size of the image by 64GB
+    ushell.run(cmd!(
+        "qemu-img resize {} +64G",
+        img_path
+    ))?;
+
+    Ok(img_path)
+}
+
+fn build_guest_kernel(ushell: &SshShell, user_home: &str, cfg: &Config) -> Result<String, ScailError> {
+    let guest_kernel_dir = dir!(user_home, crate::GUEST_KERNEL_DIR);
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
-    let branch = cfg.guest_kernel_branch;
+    let branch = cfg.guest_kernel_branch.unwrap_or("main");
 
     let guest_kernel_repo = GitRepo::HttpsPrivate {
         repo: "github.com/BijanT/linux_eph_memory.git",
@@ -136,9 +297,63 @@ fn setup_guest_vms(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
         ushell,
         guest_kernel_repo,
         Some(&guest_kernel_dir),
-        branch,
+        Some(branch),
         &[],
     )?;
 
-    Ok(())
+    let kernel_src = KernelSrc::Git {
+        repo_path: guest_kernel_dir.clone(),
+        commitish: branch.into(),
+    };
+    // Most of these options are probably already set in the default config, but just to be sure.
+    let config_options = [
+        ("CONFIG_BLK_DEV_INITRD", true),
+        ("CONFIG_PCI", true),
+        ("CONFIG_BINFMT_ELF", true),
+        ("CONFIG_SERIAL_8250", true),
+        ("CONFIG_SERIAL_8250_CONSOLE", true),
+        ("CONFIG_NET", true),
+        ("CONFIG_PACKET", true),
+        ("CONFIG_UNIX", true),
+        ("CONFIG_INET", true),
+        ("CONFIG_WIRELESS", false),
+        ("CONFIG_WLAN", false),
+        ("CONFIG_ATA", true),
+        ("CONFIG_NETDEVICES", true),
+        ("CONFIG_8139TOO", true),
+        ("CONFIG_DEVTMPFS", true),
+        ("CONFIG_TMPFS", true),
+        ("CONFIG_HUGETLBFS", true),
+        ("CONFIG_ISO9660_FS", true),
+        ("CONFIG_EXT4_FS", true),
+        ("CONFIG_VIRTIO", true),
+        ("CONFIG_VIRTIO_PCI", true),
+        ("CONFIG_VIRTIO_BALLOON", true),
+        ("CONFIG_VIRTIO_NET", true),
+        ("CONFIG_VIRTIO_BLK", true),
+        ("CONFIG_CXL_BUS", true),
+        ("CONFIG_CXL_PCI", true),
+        ("CONFIG_CXL_MEM", true),
+        ("CONFIG_CXL_ACPI", true),
+        ("CONFIG_CXL_FEATURES", true),
+    ];
+    let kernel_config = KernelConfig {
+        base_config: KernelBaseConfigSource::Defconfig,
+        extra_options: &config_options,
+    };
+
+    let git_hash = libscail::get_git_hash(ushell, &guest_kernel_dir)?;
+    let local_version = libscail::gen_local_version(branch, &git_hash);
+
+    let kernel_artifacts = libscail::build_kernel(
+        ushell,
+        kernel_src,
+        kernel_config,
+        Some(&local_version),
+        libscail::KernelPkgType::BzImage,
+        None,
+        false
+    )?;
+
+    Ok(kernel_artifacts.pkg_path)
 }

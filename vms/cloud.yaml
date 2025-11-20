@@ -1,11 +1,14 @@
-#cloud-init
-ssh-pwauth: False
+#cloud-config
+ssh_pwauth: False
 users:
   - name: ubuntu
+    # Since ssh-pwauth is false, this password can't be used for SSH login
+    # and can only be used for local console login if needed.
+    plain_text_passwd: password
     sudo: ALL=(ALL) NOPASSWD:ALL
-    lock_passwd: false
+    lock_passwd: False
     groups: sudo
     shell: /bin/bash
     # We don't know the SSH key yet; placeholder for later insertion
-    ssh-authorized-keys:
+    ssh_authorized_keys:
       - [SSH_KEY]

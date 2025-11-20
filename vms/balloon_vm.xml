@@ -4,7 +4,7 @@ user/environment. So, we use placeholders in the form [PLACEHOLDER_NAME] that
 will be replaced with the actual paths by the scripts that use this XML file.
 -->
 <domain type="kvm">
-	<name>balloon-vm</name>
+	<name>balloon_vm</name>
 	<memory unit="GiB">48</memory>
 	<vcpu>2</vcpu>
 	<os>
@@ -32,7 +32,7 @@ will be replaced with the actual paths by the scripts that use this XML file.
 		</disk>
 		<disk type="file" device="disk">
 			<driver name="qemu" type="raw" queues="4"/>
-			<source file="[CLOUD_INIT_ISO]"/>
+			<source file="[CLOUD_INIT_IMAGE]"/>
 			<target dev="vdb" bus="virtio"/>
 			<readonly/>
 		</disk>
@@ -46,6 +46,6 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<source network="default"/>
 			<model type="virtio"/>
 		</interface>
-		<memballoon mode="virtio" autodeflate="on" freePageReporting="on" />
+		<memballoon model="virtio" autodeflate="on" freePageReporting="on" />
 	</devices>
 </domain>

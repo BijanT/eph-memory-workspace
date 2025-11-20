@@ -4,9 +4,13 @@ mod setup_vms;
 use clap::arg;
 use libscail::{ScailError, ScailErrorType};
 
-const RESULTS_DIR: &str = "results/";
-const WKSPC_DIR: &str = "research-workspace/";
-const GUEST_KERNEL_DIR: &str = "guest-kernel/";
+const RESULTS_DIR: &str = "results";
+const WKSPC_DIR: &str = "research-workspace";
+const IMGS_DIR: &str = "imgs";
+const DOMAINS_DIR: &str = "domains";
+const GUEST_KERNEL_DIR: &str = "guest-kernel";
+
+const LIBVIRT_URI: &str = "qemu:///system";
 
 fn run() -> Result<(), ScailError> {
     let matches = clap::Command::new("runner")
