@@ -1,13 +1,13 @@
 use clap::arg;
 
 use libscail::{
-    Login, ScailError, dir, dump_sys_info, escape_for_bash, get_user_home_dir,
+    Login, ScailError, dir, escape_for_bash, get_user_home_dir,
     output::{Parametrize, Timestamp},
 };
 
 use serde::{Deserialize, Serialize};
 
-use spurs::{Execute, SshShell, cmd};
+use spurs::{Execute, cmd};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
 struct Config {
@@ -49,7 +49,7 @@ where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
     // Reboot the machine to start from a fresh slate
-    let ushell = connect_and_setup_host(&login)?;
+    let ushell = crate::reboot_and_connect(&login)?;
     let user_home = get_user_home_dir(&ushell)?;
     let results_dir = dir!(user_home, crate::RESULTS_DIR);
 
@@ -64,44 +64,4 @@ where
 
     println!("RESULTS: {}", dir!(results_dir, cfg.gen_file_name("")));
     Ok(())
-}
-
-fn connect_and_setup_host<A>(login: &Login<A>) -> Result<SshShell, ScailError>
-where
-    A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
-{
-    let ushell = SshShell::with_any_key(login.username, &login.host)?;
-    let _ = ushell.run(cmd!("sudo reboot"));
-
-    // It sometimes takes a few seconds for the reboot to actually happen,
-    // so make sure to wait for a bit.
-    std::thread::sleep(std::time::Duration::from_secs(10));
-
-    // Keep trying to connect until we succeed
-    let ushell = {
-        let mut shell;
-        loop {
-            println!("Attempting to reconnect...");
-            shell = match SshShell::with_any_key(login.username, &login.host) {
-                Ok(s) => s,
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                    continue;
-                }
-            };
-            match shell.run(cmd!("whoami")) {
-                Ok(_) => break,
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                    continue;
-                }
-            }
-        }
-
-        shell
-    };
-
-    dump_sys_info(&ushell)?;
-
-    Ok(ushell)
 }

@@ -1,3 +1,5 @@
+use std::net::ToSocketAddrs;
+
 /// Configure fresh CloudLab machine, install dependencies, and setup VMs
 use clap::{ArgAction, ArgMatches, arg};
 use libscail::{GitRepo, Login, KernelSrc, KernelBaseConfigSource, KernelConfig, ScailError, clone_git_repo, dir, get_user_home_dir};
@@ -52,25 +54,25 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    let ushell = SshShell::with_any_key(login.username, &login.host)?;
+    let host_shell = SshShell::with_any_key(login.username, &login.host)?;
 
     if cfg.resize_root {
-        libscail::resize_root_partition(&ushell)?;
+        libscail::resize_root_partition(&host_shell)?;
     }
 
-    install_host_dependencies(&ushell)?;
-    clone_research_workspace(&ushell, cfg)?;
+    install_host_dependencies(&host_shell)?;
+    clone_research_workspace(&host_shell, cfg)?;
 
     // The user needs to be in the KVM and libvirt groups to run VMs.
-    ushell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
-    ushell.run(cmd!("sudo usermod -aG libvirt {}", login.username))?;
-    // Reconnect to apply group changes
-    let ushell = SshShell::from_existing(&ushell)?;
+    host_shell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
+    host_shell.run(cmd!("sudo usermod -aG libvirt {}", login.username))?;
+    // Reconnect to apply group changes and uninstalled AppArmor.
+    let host_shell = crate::reboot_and_connect(&login)?;
 
-    setup_guest_vms(&ushell, cfg)?;
+    setup_guest_vms(&host_shell, &login.host, cfg)?;
 
-    ushell.run(cmd!("virsh -c {} list --all", crate::LIBVIRT_URI))?;
-    ushell.run(cmd!("echo DONE"))?;
+    host_shell.run(cmd!("virsh -c {} list --all", crate::LIBVIRT_URI))?;
+    host_shell.run(cmd!("echo DONE"))?;
 
     Ok(())
 }
@@ -114,6 +116,35 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     Ok(())
 }
 
+fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
+    ushell.run(cmd!("sudo apt update; sudo apt upgrade -y"))?;
+
+    let apt_packages = [
+        "build-essential",
+        "libssl-dev",
+        "libelf-dev",
+        "libncurses-dev",
+        "libevent-dev",
+        "dwarves",
+        "numactl",
+        "linux-tools-common",
+        "python3",
+        "python3-pip",
+        "cmake",
+        "curl",
+        "bpfcc-tools",
+        "maven",
+        "autoconf",
+        "pkgconf",
+        "bison",
+        "flex",
+        "libnuma-dev",
+    ];
+    ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
+
+    Ok(())
+}
+
 fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
     const SUBMODULES: &[&str] = &["libscail"];
     let user_home = get_user_home_dir(ushell)?;
@@ -130,10 +161,13 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
 
     clone_git_repo(ushell, wkspc_repo, Some(&wkspc_dir), branch, SUBMODULES)?;
 
+    // Build ubmks
+    ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "ubmks")))?;
+
     Ok(())
 }
 
-fn setup_guest_vms(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
+fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -> Result<(), ScailError> {
     let user_home = get_user_home_dir(ushell)?;
     // Directory that contains the files used to define the VMs
     let vm_info_dir = dir!(&user_home, crate::WKSPC_DIR, "vms");
@@ -162,6 +196,7 @@ fn setup_guest_vms(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
     let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
 
     // Do setup for each VM
+    let mut ssh_port = crate::START_NAT_PORT;
     for vm_name in vms_list.iter() {
         // The domain template file for this VM
         let domain_template_path = dir!(&vm_info_dir, format!("{}.xml", vm_name));
@@ -191,6 +226,46 @@ fn setup_guest_vms(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
         ushell.run(cmd!("virsh -c {} undefine {}", crate::LIBVIRT_URI, vm_name).allow_error())?;
         // Define the VM using the generated domain XML
         ushell.run(cmd!("virsh -c {} define {}", crate::LIBVIRT_URI, domain_xml_path))?;
+
+        // Start the VM to set it up internally
+        ushell.run(cmd!("virsh -c {} start {}", crate::LIBVIRT_URI, vm_name))?;
+
+        // Wait a few seconds for the VM to boot
+        let mut count = 0;
+        let vm_ip = loop {
+            match crate::get_vm_ip(ushell, vm_name) {
+                Ok(ip) => break ip,
+                Err(e) => {
+                    count += 1;
+                    if count >= 5 {
+                        return Err(e);
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                }
+            }
+        };
+
+        // Setup SSH access to the VM by adding a port forwarding rule on the host
+        crate::setup_port_forwarding(
+            ushell,
+            ssh_port,
+            &vm_ip,
+            22
+        )?;
+
+        // Install dependencies and clone workspace inside the VM
+        let host_remote_ip = host.to_socket_addrs().unwrap().next().unwrap().ip();
+        println!("Setting up VM {} at {}@{}:{}", vm_name, crate::VM_USERNAME, host_remote_ip, ssh_port);
+        std::thread::sleep(std::time::Duration::from_secs(15));
+        let vm_shell = SshShell::with_any_key(crate::VM_USERNAME, (host_remote_ip, ssh_port))?;
+        install_guest_dependencies(&vm_shell)?;
+        clone_research_workspace(&vm_shell, cfg)?;
+
+        // Shutdown the VM after setup is complete
+        ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
+
+        // Setup port forwarding for SSH access to the VM
+        ssh_port += 1;
     }
 
     Ok(())
