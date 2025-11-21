@@ -6,6 +6,10 @@ will be replaced with the actual paths by the scripts that use this XML file.
 <domain type="kvm">
 	<name>balloon_vm</name>
 	<memory unit="GiB">48</memory>
+	<memoryBacking>
+		<source type="memfd"/>
+		<access mode="shared"/>
+	</memoryBacking>
 	<vcpu>2</vcpu>
 	<os>
 		<type>hvm</type>
@@ -46,6 +50,12 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<source network="default"/>
 			<model type="virtio"/>
 		</interface>
+		<filesystem type="mount" accessmode="passthrough">
+			<driver type="virtiofs" queue="1024"/>
+			<source dir="[HOST_RESULTS_DIR]"/>
+			<!-- Tag to use to mount the results directory in the guest-->
+			<target dir="results_dir"/>
+		</filesystem>
 		<memballoon model="virtio" autodeflate="on" freePageReporting="on" />
 	</devices>
 </domain>

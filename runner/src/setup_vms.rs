@@ -105,6 +105,7 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "cgroup-tools",
         "cloud-utils",
         "libvirt-daemon-system",
+        "virtiofsd",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -169,6 +170,8 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
 
 fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -> Result<(), ScailError> {
     let user_home = get_user_home_dir(ushell)?;
+    // Where the results will be stored on the host
+    let results_dir = dir!(&user_home, crate::RESULTS_DIR);
     // Directory that contains the files used to define the VMs
     let vm_info_dir = dir!(&user_home, crate::WKSPC_DIR, "vms");
     // Directory to store VM disk images
@@ -183,7 +186,8 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
         "\\[GUEST_INITRD\\]",
         "\\[QEMU\\]",
         "\\[GUEST_DISK_IMAGE\\]",
-        "\\[CLOUD_INIT_IMAGE\\]"
+        "\\[CLOUD_INIT_IMAGE\\]",
+        "\\[HOST_RESULTS_DIR\\]",
     ];
 
     let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
@@ -192,6 +196,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
 
     ushell.run(cmd!("mkdir -p {}", imgs_dir))?;
     ushell.run(cmd!("mkdir -p {}", domains_dir))?;
+    ushell.run(cmd!("mkdir -p {}", results_dir))?;
 
     let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
 
@@ -213,6 +218,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
             qemu_path,
             &ubuntu_img_path,
             &cloud_init_img_path,
+            &results_dir,
         ];
         let sed_cmd = gen_sed_replace_cmd(&template_replace_from, &template_replace_to);
         ushell.run(cmd!(
@@ -406,6 +412,8 @@ fn build_guest_kernel(ushell: &SshShell, user_home: &str, cfg: &Config) -> Resul
         ("CONFIG_VIRTIO_BALLOON", true),
         ("CONFIG_VIRTIO_NET", true),
         ("CONFIG_VIRTIO_BLK", true),
+        ("CONFIG_FUSE_FS", true),
+        ("CONFIG_VIRTIO_FS", true),
         ("CONFIG_CXL_BUS", true),
         ("CONFIG_CXL_PCI", true),
         ("CONFIG_CXL_MEM", true),
