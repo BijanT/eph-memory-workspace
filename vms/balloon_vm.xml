@@ -56,6 +56,8 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<!-- Tag to use to mount the results directory in the guest-->
 			<target dir="results_dir"/>
 		</filesystem>
-		<memballoon model="virtio" autodeflate="on" freePageReporting="on" />
+		<memballoon model="virtio" autodeflate="on" freePageReporting="on">
+			<stats period="5"/>
+		</memballoon>
 	</devices>
 </domain>
