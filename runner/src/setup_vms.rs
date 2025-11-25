@@ -238,36 +238,9 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
             size_gb * 512))?;
 
         // Start the VM to set it up internally
-        ushell.run(cmd!("virsh -c {} start {}", crate::LIBVIRT_URI, vm_name))?;
-
-        // Wait a few seconds for the VM to boot
-        let mut count = 0;
-        let vm_ip = loop {
-            match crate::get_vm_ip(ushell, vm_name) {
-                Ok(ip) => break ip,
-                Err(e) => {
-                    count += 1;
-                    if count >= 5 {
-                        return Err(e);
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                }
-            }
-        };
-
-        // Setup SSH access to the VM by adding a port forwarding rule on the host
-        crate::setup_port_forwarding(
-            ushell,
-            ssh_port,
-            &vm_ip,
-            22
-        )?;
+        let vm_shell = crate::start_and_connect_to_vm(ushell, vm_name, &host, ssh_port)?;
 
         // Install dependencies and clone workspace inside the VM
-        let host_remote_ip = host.to_socket_addrs().unwrap().next().unwrap().ip();
-        println!("Setting up VM {} at {}@{}:{}", vm_name, crate::VM_USERNAME, host_remote_ip, ssh_port);
-        std::thread::sleep(std::time::Duration::from_secs(15));
-        let vm_shell = SshShell::with_any_key(crate::VM_USERNAME, (host_remote_ip, ssh_port))?;
         install_guest_dependencies(&vm_shell)?;
         clone_research_workspace(&vm_shell, cfg)?;
 
