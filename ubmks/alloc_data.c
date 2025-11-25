@@ -13,22 +13,22 @@ int main(int argc, char *argv[]) {
     size_t pagesize = sysconf(_SC_PAGESIZE);
 
     if (argc != 2) {
-	fprintf(stderr, "Usage: %s <size in GB>\n", argv[0]);
-	return -1;
+        fprintf(stderr, "Usage: %s <size in GB>\n", argv[0]);
+        return -1;
     }
     size = (size_t)atoll(argv[1]) * 1024 * 1024 * 1024;
 
     gettimeofday(&start, NULL);
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     if (ptr == MAP_FAILED) {
-	perror("mmap failed");
-	return -1;
+        perror("mmap failed");
+        return -1;
     }
 
     // Touch each page to populate them and place different data in each page
     // to avoid kernel same-page merging.
     for (size_t offset = 0; offset < size / sizeof(long); offset += pagesize / sizeof(long)) {
-	((long *)ptr)[offset] = (long)(offset);
+        ((long *)ptr)[offset] = (long)(offset);
     }
     gettimeofday(&stop, NULL);
 
