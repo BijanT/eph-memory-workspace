@@ -409,6 +409,7 @@ fn build_guest_kernel(ushell: &SshShell, user_home: &str, cfg: &Config) -> Resul
         ("CONFIG_DEVTMPFS", true),
         ("CONFIG_TMPFS", true),
         ("CONFIG_HUGETLBFS", true),
+        ("CONFIG_TRANSPARENT_HUGEPAGE", true),
         ("CONFIG_ISO9660_FS", true),
         ("CONFIG_EXT4_FS", true),
         ("CONFIG_VIRTIO", true),
