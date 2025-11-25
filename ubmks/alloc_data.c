@@ -40,6 +40,7 @@ int main(int argc, char *argv[]) {
     // Keep the memory allocated for a while to allow inspection
     printf("Allocated %zu bytes of memory. In %ld.%ld seconds\n", size,
         alloc_time_sec, alloc_ms_remainder);
+    fflush(stdout);
     getchar();
 
     return 0;
