@@ -1,18 +1,21 @@
 use clap::arg;
 
 use libscail::{
-    Login, ScailError, dir, escape_for_bash, get_user_home_dir,
+    Login, ScailError, ScailErrorType, dir, escape_for_bash, get_user_home_dir,
     output::{Parametrize, Timestamp},
 };
 
 use serde::{Deserialize, Serialize};
 
-use spurs::{Execute, cmd};
+use spurs::{Execute, SshShell, cmd};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
 struct Config {
     #[name]
     exp: String,
+
+    alloc_size: usize,
+    shrink_size: usize,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -25,6 +28,11 @@ pub fn cli_options() -> clap::Command {
         .disable_version_flag(true)
         .arg(arg!(<hostname> "The domain:port of the remote"))
         .arg(arg!(<username> "The username to use for SSH login"))
+        .arg(arg!(--alloc_size <alloc_size> "The amount of data in GB to allocate")
+            .value_parser(clap::value_parser!(usize)))
+        .arg(arg!(--shrink_size <shrink_size> "The size to shrink the VM to after allocating data")
+            .value_parser(clap::value_parser!(usize)))
+
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -35,9 +43,13 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         username: username.as_str(),
         host: hostname.as_str(),
     };
+    let alloc_size = sub_m.get_one::<usize>("alloc_size").copied().unwrap();
+    let shrink_size = sub_m.get_one::<usize>("shrink_size").copied().unwrap();
 
     let cfg = Config {
         exp: "balloon-exp".to_string(),
+        alloc_size,
+        shrink_size,
         timestamp: Timestamp::now(),
     };
 
@@ -48,20 +60,66 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
+    const VM_DOMAIN: &str = "balloon_vm";
+    const VM_SIZE_GB: usize = 48;
     // Reboot the machine to start from a fresh slate
-    let ushell = crate::reboot_and_connect(&login)?;
-    let user_home = get_user_home_dir(&ushell)?;
-    let results_dir = dir!(user_home, crate::RESULTS_DIR);
+    let host_shell = crate::reboot_and_connect(&login)?;
+    let host_home = get_user_home_dir(&host_shell)?;
+    let host_results_dir = dir!(host_home, crate::RESULTS_DIR);
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
 
-    ushell.run(cmd!("mkdir -p {}", results_dir))?;
-    ushell.run(cmd!(
-        "echo {} > {}",
+    host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
+    host_shell.run(cmd!(
+        "echo {} | sudo tee {}",
         escape_for_bash(&serde_json::to_string(&cfg)?),
-        dir!(&results_dir, &params_file)
+        dir!(&host_results_dir, &params_file)
     ))?;
 
-    println!("RESULTS: {}", dir!(results_dir, cfg.gen_file_name("")));
+    // Reserve enough HugeTLB pages for the VM
+    host_shell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
+        VM_SIZE_GB * 512))?;
+
+    let guest_shell = crate::start_and_connect_to_vm(
+        &host_shell,
+        VM_DOMAIN,
+        &login.host,
+        crate::START_NAT_PORT
+    )?;
+    let guest_home = get_user_home_dir(&guest_shell)?;
+    let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
+    let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
+    let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
+
+    guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
+    crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
+
+    guest_shell.spawn(cmd!("./ubmks/alloc_data {} | sudo tee {}", cfg.alloc_size, alloc_data_file).cwd(&guest_wkspc))?;
+    // alloc_data will print some data once it has finished allocating.
+    // Wait for that.
+    while !test_written(&guest_shell, &alloc_data_file)? {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
+    host_shell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, VM_DOMAIN))?;
+
+    println!("RESULTS: {}", dir!(host_results_dir, cfg.gen_file_name("")));
     Ok(())
+}
+
+/// Returns true if the file has been written to since last read, false otherwise
+fn test_written(shell: &SshShell, file: &str) -> Result<bool, ScailError>
+{
+    let res = shell.run(cmd!("test -N {}", file));
+    match res {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if let spurs::SshError::NonZeroExit { exit, .. } = e {
+                if exit == 1 {
+                    return Ok(false);
+                }
+            }
+            Err(ScailError::new(ScailErrorType::SpursError(e)))
+        }
+    }
 }

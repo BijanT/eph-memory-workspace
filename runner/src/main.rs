@@ -203,3 +203,13 @@ where
 
     Ok(guest_shell)
 }
+
+fn mount_guest_results(guest_shell: &SshShell, results_path: &str) -> Result<(), ScailError>
+{
+    const MOUNT_TAG: &str = "results_dir";
+
+    guest_shell.run(cmd!("sudo mount -t virtiofs {} {}", MOUNT_TAG, results_path))?;
+    guest_shell.run(cmd!("sudo chown -R $USER {}", results_path))?;
+
+    Ok(())
+}
