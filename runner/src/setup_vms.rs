@@ -179,7 +179,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
     // Directory to store the complete VM domain XML files
     let domains_dir = dir!(&user_home, crate::DOMAINS_DIR);
     // List of VM's to setup
-    let vms_list = ["balloon_vm"];
+    let vms_list = [("balloon_vm", 48)];
     // Strings to replace in the domain XML templates
     let template_replace_from = [
         "\\[GUEST_KERNEL\\]",
@@ -202,7 +202,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
 
     // Do setup for each VM
     let mut ssh_port = crate::START_NAT_PORT;
-    for vm_name in vms_list.iter() {
+    for (vm_name, size_gb) in vms_list.iter() {
         // The domain template file for this VM
         let domain_template_path = dir!(&vm_info_dir, format!("{}.xml", vm_name));
         // The final domain XML file for this VM
@@ -232,6 +232,10 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
         ushell.run(cmd!("virsh -c {} undefine {}", crate::LIBVIRT_URI, vm_name).allow_error())?;
         // Define the VM using the generated domain XML
         ushell.run(cmd!("virsh -c {} define {}", crate::LIBVIRT_URI, domain_xml_path))?;
+
+        // Reserve enough HugeTLB pages for the VM
+        ushell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
+            size_gb * 512))?;
 
         // Start the VM to set it up internally
         ushell.run(cmd!("virsh -c {} start {}", crate::LIBVIRT_URI, vm_name))?;

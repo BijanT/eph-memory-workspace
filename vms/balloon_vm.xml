@@ -7,6 +7,9 @@ will be replaced with the actual paths by the scripts that use this XML file.
 	<name>balloon_vm</name>
 	<memory unit="GiB">48</memory>
 	<memoryBacking>
+		<hugepages>
+			<page size="2" unit="M"/>
+		</hugepages>
 		<source type="memfd"/>
 		<access mode="shared"/>
 	</memoryBacking>
