@@ -28,11 +28,14 @@ pub fn cli_options() -> clap::Command {
         .disable_version_flag(true)
         .arg(arg!(<hostname> "The domain:port of the remote"))
         .arg(arg!(<username> "The username to use for SSH login"))
-        .arg(arg!(--alloc_size <alloc_size> "The amount of data in GB to allocate")
-            .value_parser(clap::value_parser!(usize)))
-        .arg(arg!(--shrink_size <shrink_size> "The size to shrink the VM to after allocating data")
-            .value_parser(clap::value_parser!(usize)))
-
+        .arg(
+            arg!(--alloc_size <alloc_size> "The amount of data in GB to allocate")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(
+            arg!(--shrink_size <shrink_size> "The size to shrink the VM to after allocating data")
+                .value_parser(clap::value_parser!(usize)),
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -78,15 +81,13 @@ where
     ))?;
 
     // Reserve enough HugeTLB pages for the VM
-    host_shell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-        VM_SIZE_GB * 512))?;
+    host_shell.run(cmd!(
+        "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
+        VM_SIZE_GB * 512
+    ))?;
 
-    let guest_shell = crate::start_and_connect_to_vm(
-        &host_shell,
-        VM_DOMAIN,
-        &login.host,
-        crate::START_NAT_PORT
-    )?;
+    let guest_shell =
+        crate::start_and_connect_to_vm(&host_shell, VM_DOMAIN, &login.host, crate::START_NAT_PORT)?;
     let guest_home = get_user_home_dir(&guest_shell)?;
     let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
@@ -101,7 +102,14 @@ where
     guest_shell.run(cmd!("sudo mkswap /swapfile"))?;
     guest_shell.run(cmd!("sudo swapon /swapfile"))?;
 
-    guest_shell.spawn(cmd!("./ubmks/alloc_data {} | sudo tee {}", cfg.alloc_size, alloc_data_file).cwd(&guest_wkspc))?;
+    guest_shell.spawn(
+        cmd!(
+            "./ubmks/alloc_data {} | sudo tee {}",
+            cfg.alloc_size,
+            alloc_data_file
+        )
+        .cwd(&guest_wkspc),
+    )?;
     // alloc_data will print some data once it has finished allocating.
     // Wait for that.
     while !test_written(&guest_shell, &alloc_data_file)? {
@@ -110,19 +118,24 @@ where
 
     // Inflate the balloon to take memory from the VM and time how long it takes
     let target_shrink_size_kb = cfg.shrink_size * 1024 * 1024;
-    host_shell.run(cmd!("virsh -c {} setmem --domain {} --size {}G", crate::LIBVIRT_URI, VM_DOMAIN, cfg.shrink_size))?;
+    host_shell.run(cmd!(
+        "virsh -c {} setmem --domain {} --size {}G",
+        crate::LIBVIRT_URI,
+        VM_DOMAIN,
+        cfg.shrink_size
+    ))?;
     let start_time = std::time::Instant::now();
     loop {
         const MAX_WAIT_MS: usize = 5000;
         const MIN_WAIT_MS: usize = 500;
         const ORIG_SIZE_KB: usize = VM_SIZE_GB * 1024 * 1024;
-        let guest_size_kb = host_shell.run(
-            cmd!(
+        let guest_size_kb = host_shell
+            .run(cmd!(
                 "virsh -c {} dommemstat {} | grep actual | awk '{{print $2}}'",
                 crate::LIBVIRT_URI,
                 VM_DOMAIN
-            )
-        )?.stdout
+            ))?
+            .stdout
             .trim()
             .parse::<usize>()
             .unwrap();
@@ -131,24 +144,31 @@ where
             break;
         } else {
             // Dynamically scale the wait time to the amount of data left to swap out
-            let wait_time_ms = MAX_WAIT_MS * (guest_size_kb - target_shrink_size_kb) / (ORIG_SIZE_KB - target_shrink_size_kb);
+            let wait_time_ms = MAX_WAIT_MS * (guest_size_kb - target_shrink_size_kb)
+                / (ORIG_SIZE_KB - target_shrink_size_kb);
             let wait_time_ms = std::cmp::max(wait_time_ms, MIN_WAIT_MS);
             std::thread::sleep(std::time::Duration::from_millis(wait_time_ms as u64));
         }
     }
     let elapsed_time = start_time.elapsed();
-    host_shell.run(cmd!("echo {} | sudo tee {}", elapsed_time.as_secs_f64(), shrink_time_file))?;
+    host_shell.run(cmd!(
+        "echo {} | sudo tee {}",
+        elapsed_time.as_secs_f64(),
+        shrink_time_file
+    ))?;
 
-
-    host_shell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, VM_DOMAIN))?;
+    host_shell.run(cmd!(
+        "virsh -c {} shutdown {}",
+        crate::LIBVIRT_URI,
+        VM_DOMAIN
+    ))?;
 
     println!("RESULTS: {}", dir!(host_results_dir, cfg.gen_file_name("")));
     Ok(())
 }
 
 /// Returns true if the file has been written to since last read, false otherwise
-fn test_written(shell: &SshShell, file: &str) -> Result<bool, ScailError>
-{
+fn test_written(shell: &SshShell, file: &str) -> Result<bool, ScailError> {
     let res = shell.run(cmd!("test -N {}", file));
     match res {
         Ok(_) => Ok(true),

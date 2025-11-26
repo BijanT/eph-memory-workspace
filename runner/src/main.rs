@@ -3,7 +3,7 @@ mod setup_vms;
 
 use clap::arg;
 use libscail::{Login, ScailError, ScailErrorType};
-use spurs::{cmd, Execute, SshShell};
+use spurs::{Execute, SshShell, cmd};
 
 const RESULTS_DIR: &str = "results";
 const WKSPC_DIR: &str = "research-workspace";
@@ -67,8 +67,18 @@ fn main() {
     }
 }
 
-fn nft_rule_exists(shell: &SshShell, table: &str, chain: &str, rule: &str) -> Result<bool, ScailError> {
-    let res = shell.run(cmd!("sudo nft list chain ip {} {} | grep '{}'", table, chain, rule));
+fn nft_rule_exists(
+    shell: &SshShell,
+    table: &str,
+    chain: &str,
+    rule: &str,
+) -> Result<bool, ScailError> {
+    let res = shell.run(cmd!(
+        "sudo nft list chain ip {} {} | grep '{}'",
+        table,
+        chain,
+        rule
+    ));
 
     // grep returns an exit code of 0 if a match is found, 1 if a match is not found, and 2 on error.
     match res {
@@ -84,21 +94,38 @@ fn nft_rule_exists(shell: &SshShell, table: &str, chain: &str, rule: &str) -> Re
     }
 }
 
-fn setup_port_forwarding(host_shell: &SshShell, host_port: u16, guest_ip: &str, guest_port: u16) -> Result<(), ScailError> {
-    let accept_rule = format!("oifname \"virbr0\" ip daddr {} tcp dport {} accept", guest_ip, guest_port);
-    let prerouting_rule = format!("tcp dport {} dnat to {}:{}", host_port, guest_ip, guest_port);
+fn setup_port_forwarding(
+    host_shell: &SshShell,
+    host_port: u16,
+    guest_ip: &str,
+    guest_port: u16,
+) -> Result<(), ScailError> {
+    let accept_rule = format!(
+        "oifname \"virbr0\" ip daddr {} tcp dport {} accept",
+        guest_ip, guest_port
+    );
+    let prerouting_rule = format!(
+        "tcp dport {} dnat to {}:{}",
+        host_port, guest_ip, guest_port
+    );
     // Make sure that packet forwarding is enabled on the host.
     host_shell.run(cmd!("sudo sysctl -w net.ipv4.ip_forward=1"))?;
 
     // Make sure to accept forwarded packets if the rule isn't already present.
     if !nft_rule_exists(host_shell, "filter", "FORWARD", &accept_rule)? {
-        host_shell.run(cmd!("sudo nft insert rule ip filter FORWARD {}", accept_rule))?;
+        host_shell.run(cmd!(
+            "sudo nft insert rule ip filter FORWARD {}",
+            accept_rule
+        ))?;
     }
     // This command will do nothing if the PREROUTING chain already exists.
     host_shell.run(cmd!("sudo nft -- create chain ip nat PREROUTING {{ type nat hook prerouting priority -100 \\; }}"))?;
     // Add DNAT rule if it isn't already present.
     if !nft_rule_exists(host_shell, "nat", "PREROUTING", &prerouting_rule)? {
-        host_shell.run(cmd!("sudo nft insert rule ip nat PREROUTING {}", prerouting_rule))?;
+        host_shell.run(cmd!(
+            "sudo nft insert rule ip nat PREROUTING {}",
+            prerouting_rule
+        ))?;
     }
 
     Ok(())
@@ -112,10 +139,9 @@ fn get_vm_ip(host_shell: &SshShell, vm_name: &str) -> Result<String, ScailError>
     ))?;
     let ip = output.stdout.trim().to_string();
     if ip.is_empty() {
-        return Err(ScailError::new(ScailErrorType::InvalidValueError{msg: format!(
-            "Could not get IP address for VM {}",
-            vm_name
-        )}));
+        return Err(ScailError::new(ScailErrorType::InvalidValueError {
+            msg: format!("Could not get IP address for VM {}", vm_name),
+        }));
     }
     Ok(ip)
 }
@@ -164,10 +190,10 @@ fn start_and_connect_to_vm<A>(
     host_shell: &SshShell,
     domain: &str,
     host: A,
-    host_port: u16
+    host_port: u16,
 ) -> Result<SshShell, ScailError>
 where
-    A: std::net::ToSocketAddrs
+    A: std::net::ToSocketAddrs,
 {
     host_shell.run(cmd!("virsh -c {} start {}", crate::LIBVIRT_URI, domain))?;
 
@@ -187,28 +213,32 @@ where
     };
 
     // Setup SSH access to the VM by adding a port forwarding rule on the host
-    crate::setup_port_forwarding(
-        host_shell,
-        host_port,
-        &vm_ip,
-        22
-    )?;
+    crate::setup_port_forwarding(host_shell, host_port, &vm_ip, 22)?;
 
     // It takes some time between the VM's IP being available to its sshd being up
     std::thread::sleep(std::time::Duration::from_secs(15));
 
     let host_remote_ip = host.to_socket_addrs().unwrap().next().unwrap().ip();
-    println!("Connecting to VM {} at {}@{}:{}", domain, crate::VM_USERNAME, host_remote_ip, host_port);
+    println!(
+        "Connecting to VM {} at {}@{}:{}",
+        domain,
+        crate::VM_USERNAME,
+        host_remote_ip,
+        host_port
+    );
     let guest_shell = SshShell::with_any_key(crate::VM_USERNAME, (host_remote_ip, host_port))?;
 
     Ok(guest_shell)
 }
 
-fn mount_guest_results(guest_shell: &SshShell, results_path: &str) -> Result<(), ScailError>
-{
+fn mount_guest_results(guest_shell: &SshShell, results_path: &str) -> Result<(), ScailError> {
     const MOUNT_TAG: &str = "results_dir";
 
-    guest_shell.run(cmd!("sudo mount -t virtiofs {} {}", MOUNT_TAG, results_path))?;
+    guest_shell.run(cmd!(
+        "sudo mount -t virtiofs {} {}",
+        MOUNT_TAG,
+        results_path
+    ))?;
     guest_shell.run(cmd!("sudo chown -R $USER {}", results_path))?;
 
     Ok(())

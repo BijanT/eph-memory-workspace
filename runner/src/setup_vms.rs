@@ -2,7 +2,10 @@ use std::net::ToSocketAddrs;
 
 /// Configure fresh CloudLab machine, install dependencies, and setup VMs
 use clap::{ArgAction, ArgMatches, arg};
-use libscail::{GitRepo, Login, KernelSrc, KernelBaseConfigSource, KernelConfig, ScailError, clone_git_repo, dir, get_user_home_dir};
+use libscail::{
+    GitRepo, KernelBaseConfigSource, KernelConfig, KernelSrc, Login, ScailError, clone_git_repo,
+    dir, get_user_home_dir,
+};
 use spurs::{Execute, SshShell, cmd};
 
 pub fn cli_options() -> clap::Command {
@@ -168,7 +171,11 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
     Ok(())
 }
 
-fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -> Result<(), ScailError> {
+fn setup_guest_vms<A: ToSocketAddrs>(
+    ushell: &SshShell,
+    host: A,
+    cfg: &Config,
+) -> Result<(), ScailError> {
     let user_home = get_user_home_dir(ushell)?;
     // Where the results will be stored on the host
     let results_dir = dir!(&user_home, crate::RESULTS_DIR);
@@ -231,7 +238,11 @@ fn setup_guest_vms<A: ToSocketAddrs>(ushell: &SshShell, host: A, cfg: &Config) -
         // Undefine any existing VM with the same name
         ushell.run(cmd!("virsh -c {} undefine {}", crate::LIBVIRT_URI, vm_name).allow_error())?;
         // Define the VM using the generated domain XML
-        ushell.run(cmd!("virsh -c {} define {}", crate::LIBVIRT_URI, domain_xml_path))?;
+        ushell.run(cmd!(
+            "virsh -c {} define {}",
+            crate::LIBVIRT_URI,
+            domain_xml_path
+        ))?;
 
         // Reserve enough HugeTLB pages for the VM
         ushell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
@@ -268,7 +279,8 @@ fn create_cloud_init_img(
     // Replace the SSH public key placeholder in the user data template file
     // with all of the keys in the remote's ~/.ssh/authorized_keys file.
     // Valid keys in the file are of the format "ssh-<key type> <key> <comment>"
-    let ssh_keys = ushell.run(cmd!("cat {}/.ssh/authorized_keys", user_home))?
+    let ssh_keys = ushell
+        .run(cmd!("cat {}/.ssh/authorized_keys", user_home))?
         .stdout
         .lines()
         .filter(|line| line.trim().starts_with("ssh"))
@@ -306,40 +318,38 @@ fn gen_sed_replace_cmd(replace_from: &[&str], replace_to: &[&str]) -> String {
     sed_cmd
 }
 
-fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str, vm_name: &str) -> Result<String, ScailError> {
+fn create_ubuntu_img(
+    ushell: &SshShell,
+    imgs_dir: &str,
+    vm_name: &str,
+) -> Result<String, ScailError> {
     let base_img_path = dir!(imgs_dir, "ubuntu_base.qcow2");
     let img_path = dir!(imgs_dir, format!("{}.qcow2", vm_name));
-    let ubuntu_img_url = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img";
+    let ubuntu_img_url =
+        "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img";
 
     // Download the base Ubuntu image if it does not already exist
     if !libscail::file_exists(ushell, &base_img_path)? {
-        ushell.run(cmd!(
-            "wget -O {} {}",
-            base_img_path,
-            ubuntu_img_url
-        ))?;
+        ushell.run(cmd!("wget -O {} {}", base_img_path, ubuntu_img_url))?;
     }
 
     // Delete any existing image for this VM
     ushell.run(cmd!("rm -f {}", img_path))?;
 
     // Create a copy of the base image for this VM
-    ushell.run(cmd!(
-        "cp {} {}",
-        base_img_path,
-        img_path
-    ))?;
+    ushell.run(cmd!("cp {} {}", base_img_path, img_path))?;
 
     // Increase the size of the image by 64GB
-    ushell.run(cmd!(
-        "qemu-img resize {} +64G",
-        img_path
-    ))?;
+    ushell.run(cmd!("qemu-img resize {} +64G", img_path))?;
 
     Ok(img_path)
 }
 
-fn build_guest_kernel(ushell: &SshShell, user_home: &str, cfg: &Config) -> Result<String, ScailError> {
+fn build_guest_kernel(
+    ushell: &SshShell,
+    user_home: &str,
+    cfg: &Config,
+) -> Result<String, ScailError> {
     let guest_kernel_dir = dir!(user_home, crate::GUEST_KERNEL_DIR);
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
@@ -413,7 +423,7 @@ fn build_guest_kernel(ushell: &SshShell, user_home: &str, cfg: &Config) -> Resul
         Some(&local_version),
         libscail::KernelPkgType::BzImage,
         None,
-        false
+        false,
     )?;
 
     Ok(kernel_artifacts.pkg_path)
