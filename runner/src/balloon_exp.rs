@@ -66,6 +66,7 @@ where
     let host_shell = crate::reboot_and_connect(&login)?;
     let host_home = get_user_home_dir(&host_shell)?;
     let host_results_dir = dir!(host_home, crate::RESULTS_DIR);
+    let shrink_time_file = cfg.gen_file_name("shrink_time");
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
 
@@ -94,12 +95,50 @@ where
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
     crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
 
+    // Configure the swap space
+    guest_shell.run(cmd!("sudo fallocate -l 32G /swapfile"))?;
+    guest_shell.run(cmd!("sudo chmod 0600 /swapfile"))?;
+    guest_shell.run(cmd!("sudo mkswap /swapfile"))?;
+    guest_shell.run(cmd!("sudo swapon /swapfile"))?;
+
     guest_shell.spawn(cmd!("./ubmks/alloc_data {} | sudo tee {}", cfg.alloc_size, alloc_data_file).cwd(&guest_wkspc))?;
     // alloc_data will print some data once it has finished allocating.
     // Wait for that.
     while !test_written(&guest_shell, &alloc_data_file)? {
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
+
+    // Inflate the balloon to take memory from the VM and time how long it takes
+    let target_shrink_size_kb = cfg.shrink_size * 1024 * 1024;
+    host_shell.run(cmd!("virsh -c {} setmem --domain {} --size {}G", crate::LIBVIRT_URI, VM_DOMAIN, cfg.shrink_size))?;
+    let start_time = std::time::Instant::now();
+    loop {
+        const MAX_WAIT_MS: usize = 5000;
+        const MIN_WAIT_MS: usize = 500;
+        const ORIG_SIZE_KB: usize = VM_SIZE_GB * 1024 * 1024;
+        let guest_size_kb = host_shell.run(
+            cmd!(
+                "virsh -c {} dommemstat {} | grep actual | awk '{{print $2}}'",
+                crate::LIBVIRT_URI,
+                VM_DOMAIN
+            )
+        )?.stdout
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+
+        if guest_size_kb == target_shrink_size_kb {
+            break;
+        } else {
+            // Dynamically scale the wait time to the amount of data left to swap out
+            let wait_time_ms = MAX_WAIT_MS * (guest_size_kb - target_shrink_size_kb) / (ORIG_SIZE_KB - target_shrink_size_kb);
+            let wait_time_ms = std::cmp::max(wait_time_ms, MIN_WAIT_MS);
+            std::thread::sleep(std::time::Duration::from_millis(wait_time_ms as u64));
+        }
+    }
+    let elapsed_time = start_time.elapsed();
+    host_shell.run(cmd!("echo {} | sudo tee {}", elapsed_time.as_secs_f64(), shrink_time_file))?;
+
 
     host_shell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, VM_DOMAIN))?;
 
