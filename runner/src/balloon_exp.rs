@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use clap::arg;
 
 use libscail::{
     Login, ScailError, ScailErrorType, dir, escape_for_bash, get_user_home_dir,
     output::{Parametrize, Timestamp},
+    workloads::{TasksetCtxBuilder, TasksetCtxInterleaving},
 };
 
 use serde::{Deserialize, Serialize};
@@ -65,6 +68,7 @@ where
 {
     const VM_DOMAIN: &str = "balloon_vm";
     const VM_SIZE_GB: usize = 48;
+    const NUM_VCPUS: usize = 2;
     // Reboot the machine to start from a fresh slate
     let host_shell = crate::reboot_and_connect(login)?;
     let host_home = get_user_home_dir(&host_shell)?;
@@ -80,14 +84,29 @@ where
         dir!(&host_results_dir, &params_file)
     ))?;
 
+    let mut tctx = TasksetCtxBuilder::from_lscpu(&host_shell)?
+        .numa_interleaving(TasksetCtxInterleaving::Sequential)
+        .skip_hyperthreads(true)
+        .build();
+
+    let mut vcpu_map: HashMap<usize, usize> = HashMap::new();
+    for i in 0..NUM_VCPUS {
+        vcpu_map.insert(i, tctx.next().unwrap());
+    }
+
     // Reserve enough HugeTLB pages for the VM
     host_shell.run(cmd!(
         "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
         VM_SIZE_GB * 512
     ))?;
 
-    let guest_shell =
-        crate::start_and_connect_to_vm(&host_shell, VM_DOMAIN, &login.host, crate::START_NAT_PORT)?;
+    let guest_shell = crate::start_and_connect_to_vm(
+        &host_shell,
+        VM_DOMAIN,
+        &login.host,
+        crate::START_NAT_PORT,
+        Some(vcpu_map),
+    )?;
     let guest_home = get_user_home_dir(&guest_shell)?;
     let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);

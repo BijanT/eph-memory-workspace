@@ -4,6 +4,7 @@ mod setup_vms;
 use clap::arg;
 use libscail::{Login, ScailError, ScailErrorType};
 use spurs::{Execute, SshShell, cmd};
+use std::collections::HashMap;
 
 const RESULTS_DIR: &str = "results";
 const WKSPC_DIR: &str = "research-workspace";
@@ -191,10 +192,38 @@ fn start_and_connect_to_vm<A>(
     domain: &str,
     host: A,
     host_port: u16,
+    vcpu_map: Option<HashMap<usize, usize>>,
 ) -> Result<SshShell, ScailError>
 where
     A: std::net::ToSocketAddrs,
 {
+    // Before we start the VM, configure the vCPU pinning if necessary
+    if let Some(vcpu_map) = vcpu_map {
+        // Make sure the number of vCPUs is consistent with libvirt
+        host_shell.run(cmd!(
+            "virsh -c {} setvcpus {} {} --maximum --config",
+            LIBVIRT_URI,
+            domain,
+            vcpu_map.len()
+        ))?;
+        host_shell.run(cmd!(
+            "virsh -c {} setvcpus {} {} --config",
+            LIBVIRT_URI,
+            domain,
+            vcpu_map.len()
+        ))?;
+
+        for (v, p) in vcpu_map {
+            host_shell.run(cmd!(
+                "virsh -c {} vcpupin {} --config {} {}",
+                LIBVIRT_URI,
+                domain,
+                v,
+                p
+            ))?;
+        }
+    }
+
     host_shell.run(cmd!("virsh -c {} start {}", crate::LIBVIRT_URI, domain))?;
 
     // Wait a few seconds for the VM to boot
