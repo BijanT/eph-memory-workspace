@@ -59,7 +59,7 @@ fn main() {
         // Print the error and backtrace.
         println!(
             "`runner` encountered the following error:\n{}\n{}",
-            e.to_string(),
+            e,
             e.backtrace(),
         );
 
@@ -84,10 +84,10 @@ fn nft_rule_exists(
     match res {
         Ok(_) => Ok(true),
         Err(e) => {
-            if let spurs::SshError::NonZeroExit { exit, .. } = e {
-                if exit == 1 {
-                    return Ok(false);
-                }
+            if let spurs::SshError::NonZeroExit { exit, .. } = e
+                && exit == 1
+            {
+                return Ok(false);
             }
             Err(ScailError::new(ScailErrorType::SpursError(e)))
         }

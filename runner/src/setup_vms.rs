@@ -70,7 +70,7 @@ where
     host_shell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
     host_shell.run(cmd!("sudo usermod -aG libvirt {}", login.username))?;
     // Reconnect to apply group changes and uninstalled AppArmor.
-    let host_shell = crate::reboot_and_connect(&login)?;
+    let host_shell = crate::reboot_and_connect(login)?;
 
     setup_guest_vms(&host_shell, &login.host, cfg)?;
 
@@ -115,7 +115,7 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     // AppArmor may interfere with some experiments, so uninstall it.
     ushell.run(cmd!("sudo apt remove -y apparmor"))?;
 
-    libscail::install_rust(&ushell)?;
+    libscail::install_rust(ushell)?;
 
     Ok(())
 }

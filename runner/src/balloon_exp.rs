@@ -66,7 +66,7 @@ where
     const VM_DOMAIN: &str = "balloon_vm";
     const VM_SIZE_GB: usize = 48;
     // Reboot the machine to start from a fresh slate
-    let host_shell = crate::reboot_and_connect(&login)?;
+    let host_shell = crate::reboot_and_connect(login)?;
     let host_home = get_user_home_dir(&host_shell)?;
     let host_results_dir = dir!(host_home, crate::RESULTS_DIR);
     let shrink_time_file = cfg.gen_file_name("shrink_time");
@@ -173,10 +173,10 @@ fn test_written(shell: &SshShell, file: &str) -> Result<bool, ScailError> {
     match res {
         Ok(_) => Ok(true),
         Err(e) => {
-            if let spurs::SshError::NonZeroExit { exit, .. } = e {
-                if exit == 1 {
-                    return Ok(false);
-                }
+            if let spurs::SshError::NonZeroExit { exit, .. } = e
+                && exit == 1
+            {
+                return Ok(false);
             }
             Err(ScailError::new(ScailErrorType::SpursError(e)))
         }
