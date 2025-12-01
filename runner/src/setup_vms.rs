@@ -186,7 +186,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // Directory to store the complete VM domain XML files
     let domains_dir = dir!(&user_home, crate::DOMAINS_DIR);
     // List of VM's to setup
-    let vms_list = [("balloon_vm", 48)];
+    let vms_list = [("balloon_vm", 48), ("hotplug_vm", 48)];
     // Strings to replace in the domain XML templates
     let template_replace_from = [
         "\\[GUEST_KERNEL\\]",
@@ -402,6 +402,9 @@ fn build_guest_kernel(
         ("CONFIG_VIRTIO_BLK", true),
         ("CONFIG_FUSE_FS", true),
         ("CONFIG_VIRTIO_FS", true),
+        ("CONFIG_MEMORY_HOTPLUG", true),
+        ("CONFIG_MEMORY_HOTREMOVE", true),
+        ("CONFIG_ACPI_HOTPLUG_MEMORY", true),
         ("CONFIG_CXL_BUS", true),
         ("CONFIG_CXL_PCI", true),
         ("CONFIG_CXL_MEM", true),
