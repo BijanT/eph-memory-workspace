@@ -73,7 +73,7 @@ where
     let host_shell = crate::reboot_and_connect(login)?;
     let host_home = get_user_home_dir(&host_shell)?;
     let host_results_dir = dir!(host_home, crate::RESULTS_DIR);
-    let shrink_time_file = cfg.gen_file_name("shrink_time");
+    let shrink_time_file = dir!(&host_results_dir, cfg.gen_file_name("shrink_time"));
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
 
