@@ -13,3 +13,4 @@
 *.o
 
 ubmks/alloc_data
+ubmks/multi_alloc
