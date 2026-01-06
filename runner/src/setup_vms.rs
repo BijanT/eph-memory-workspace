@@ -405,6 +405,7 @@ fn build_guest_kernel(
         ("CONFIG_MEMORY_HOTPLUG", true),
         ("CONFIG_MEMORY_HOTREMOVE", true),
         ("CONFIG_ACPI_HOTPLUG_MEMORY", true),
+        ("CONFIG_MHP_DEFAULT_ONLINE_TYPE_ONLINE_MOVABLE", true),
         ("CONFIG_CXL_BUS", true),
         ("CONFIG_CXL_PCI", true),
         ("CONFIG_CXL_MEM", true),
