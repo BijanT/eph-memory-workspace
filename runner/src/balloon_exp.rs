@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use spurs::{Execute, SshShell, cmd};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ShrinkStrategy {
+    Balloon,
+    HotUnplug,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
 struct Config {
     #[name]
@@ -19,6 +25,7 @@ struct Config {
 
     alloc_size: usize,
     shrink_size: usize,
+    strat: ShrinkStrategy,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -39,6 +46,17 @@ pub fn cli_options() -> clap::Command {
             arg!(--shrink_size <shrink_size> "The size to shrink the VM to after allocating data")
                 .value_parser(clap::value_parser!(usize)),
         )
+        .arg(
+            arg!(--balloon "Use the balloon driver for memory shrinking")
+                .action(clap::ArgAction::SetTrue)
+                .group("strat")
+        )
+        .arg(
+            arg!(--hotunplug "Use hot-unplug for memory shrinking")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("balloon")
+                .group("strat")
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -51,11 +69,21 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     };
     let alloc_size = sub_m.get_one::<usize>("alloc_size").copied().unwrap();
     let shrink_size = sub_m.get_one::<usize>("shrink_size").copied().unwrap();
+    let strat = if sub_m.get_flag("balloon") {
+        ShrinkStrategy::Balloon
+    } else if sub_m.get_flag("hotunplug") {
+        ShrinkStrategy::HotUnplug
+    } else {
+        return Err(ScailError::new(ScailErrorType::InvalidValueError {
+            msg: "Must specify either --balloon or --hotunplug".to_string(),
+        }));
+    };
 
     let cfg = Config {
         exp: "balloon-exp".to_string(),
         alloc_size,
         shrink_size,
+        strat,
         timestamp: Timestamp::now(),
     };
 
@@ -66,13 +94,16 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    const VM_DOMAIN: &str = "balloon_vm";
     const VM_SIZE_GB: usize = 48;
     const NUM_VCPUS: usize = 2;
+    let vm_domain = match &cfg.strat {
+        ShrinkStrategy::Balloon => "balloon_vm",
+        ShrinkStrategy::HotUnplug => "hotplug_vm",
+    };
     // Reboot the machine to start from a fresh slate
     let host_shell = crate::reboot_and_connect(login)?;
     let host_home = get_user_home_dir(&host_shell)?;
-    let host_results_dir = dir!(host_home, crate::RESULTS_DIR);
+    let host_results_dir = dir!(&host_home, crate::RESULTS_DIR);
     let shrink_time_file = dir!(&host_results_dir, cfg.gen_file_name("shrink_time"));
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
@@ -102,7 +133,7 @@ where
 
     let guest_shell = crate::start_and_connect_to_vm(
         &host_shell,
-        VM_DOMAIN,
+        vm_domain,
         &login.host,
         crate::START_NAT_PORT,
         Some(vcpu_map),
@@ -136,14 +167,42 @@ where
     }
 
     // Inflate the balloon to take memory from the VM and time how long it takes
-    let target_shrink_size_kb = cfg.shrink_size * 1024 * 1024;
-    host_shell.run(cmd!(
-        "virsh -c {} setmem --domain {} --size {}G",
-        crate::LIBVIRT_URI,
-        VM_DOMAIN,
-        cfg.shrink_size
-    ))?;
     let start_time = std::time::Instant::now();
+    match &cfg.strat {
+        ShrinkStrategy::Balloon => {
+            host_shell.run(cmd!(
+                "virsh -c {} setmem --domain {} --size {}G",
+                crate::LIBVIRT_URI,
+                vm_domain,
+                cfg.shrink_size
+            ))?;
+        }
+        ShrinkStrategy::HotUnplug => {
+            let num_unplugs = (VM_SIZE_GB - cfg.shrink_size) / 2;
+
+            if num_unplugs > 8 {
+                return Err(ScailError::new(ScailErrorType::InvalidValueError {
+                    msg: format!(
+                        "Cannot hot-unplug more than 16GB (tried to unplug {}GB)",
+                        num_unplugs * 2
+                    ),
+                }));
+            }
+
+            for i in 0..num_unplugs {
+                // When added to libvirt, the hotplug devices are enumerated
+                // with aliases dimm0, dimm1, ..., dimm7
+                host_shell.run(cmd!(
+                    "virsh -c {} detach-device-alias {} dimm{} --live",
+                    crate::LIBVIRT_URI,
+                    vm_domain,
+                    i
+                ))?;
+            }
+        }
+    }
+
+    let target_shrink_size_kb = cfg.shrink_size * 1024 * 1024;
     loop {
         const MAX_WAIT_MS: usize = 5000;
         const MIN_WAIT_MS: usize = 500;
@@ -152,7 +211,7 @@ where
             .run(cmd!(
                 "virsh -c {} dommemstat {} | grep actual | awk '{{print $2}}'",
                 crate::LIBVIRT_URI,
-                VM_DOMAIN
+                vm_domain
             ))?
             .stdout
             .trim()
@@ -179,7 +238,7 @@ where
     host_shell.run(cmd!(
         "virsh -c {} shutdown {}",
         crate::LIBVIRT_URI,
-        VM_DOMAIN
+        vm_domain
     ))?;
 
     println!("RESULTS: {}", dir!(host_results_dir, cfg.gen_file_name("")));
