@@ -60,7 +60,7 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<target dir="results_dir"/>
 		</filesystem>
 		<memballoon model="virtio" autodeflate="on" freePageReporting="on">
-			<stats period="5"/>
+			<stats period="2"/>
 		</memballoon>
 	</devices>
 </domain>
