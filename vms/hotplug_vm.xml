@@ -67,7 +67,70 @@ will be replaced with the actual paths by the scripts that use this XML file.
 				<nodemask>0</nodemask>
 			</source>
 			<target>
-				<size unit="GiB">28</size>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
+			</target>
+		</memory>
+		<memory model="dimm">
+			<source>
+				<pagesize unit="KiB">2048</pagesize>
+				<nodemask>0</nodemask>
+			</source>
+			<target>
+				<size unit="GiB">2</size>
 			</target>
 		</memory>
 	</devices>
