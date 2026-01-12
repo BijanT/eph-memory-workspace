@@ -89,6 +89,7 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libelf-dev",
         "libncurses-dev",
         "libevent-dev",
+        "libz-dev",
         "dwarves",
         "numactl",
         "linux-tools-common",
@@ -129,6 +130,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libelf-dev",
         "libncurses-dev",
         "libevent-dev",
+        "libz-dev",
         "dwarves",
         "numactl",
         "linux-tools-common",
@@ -143,6 +145,8 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "bison",
         "flex",
         "libnuma-dev",
+        "llvm",
+        "clang",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -150,7 +154,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
 }
 
 fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
-    const SUBMODULES: &[&str] = &["libscail"];
+    const SUBMODULES: &[&str] = &["bpftool", "libbpf", "libscail"];
     let user_home = get_user_home_dir(ushell)?;
     let wkspc_dir = dir!(user_home, crate::WKSPC_DIR);
     let user = cfg.git_user.unwrap();
@@ -165,7 +169,6 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
 
     clone_git_repo(ushell, wkspc_repo, Some(&wkspc_dir), branch, SUBMODULES)?;
 
-    // Build ubmks
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "ubmks")))?;
 
     Ok(())
@@ -254,6 +257,10 @@ fn setup_guest_vms<A: ToSocketAddrs>(
         // Install dependencies and clone workspace inside the VM
         install_guest_dependencies(&vm_shell)?;
         clone_research_workspace(&vm_shell, cfg)?;
+        let guest_home = get_user_home_dir(&vm_shell)?;
+        let guest_wkspc_dir = dir!(&guest_home, crate::WKSPC_DIR);
+        vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpftool", "src")))?;
+        vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpf")))?;
 
         // Shutdown the VM after setup is complete
         ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
