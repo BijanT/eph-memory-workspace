@@ -30,7 +30,14 @@ jid = json_data['jid']
 alloc_data_file = filename_stub + "alloc_data"
 shrink_time_file = filename_stub + "shrink_time"
 
-strategy = re.findall("(\w+)_exp", cmd)[0]
+if "--balloon" in cmd:
+	strategy = "balloon"
+elif "--hotunplug" in cmd:
+	strategy = "hotunplug"
+else:
+	print("Unknown strategy in command:", cmd, file=sys.stderr)
+	exit(1)
+
 alloc_size = int(re.findall("--alloc_size (\d+)", cmd)[0])
 shrink_size = int(re.findall("--shrink_size (\d+)", cmd)[0])
 reclaimed_size = alloc_size - shrink_size
