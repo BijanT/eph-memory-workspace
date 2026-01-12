@@ -411,6 +411,10 @@ fn build_guest_kernel(
         ("CONFIG_CXL_MEM", true),
         ("CONFIG_CXL_ACPI", true),
         ("CONFIG_CXL_FEATURES", true),
+        ("CONFIG_BPF_JIT", true),
+        ("CONFIG_BPF_SYSCALL", true),
+        ("CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT", true),
+        ("CONFIG_DEBUG_INFO_BTF", true),
     ];
     let kernel_config = KernelConfig {
         base_config: KernelBaseConfigSource::Defconfig,
