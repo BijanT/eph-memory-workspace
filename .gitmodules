@@ -1,3 +1,9 @@
 [submodule "libscail"]
 	path = libscail
 	url = https://github.com/multifacet/libscail.git
+[submodule "bpftool"]
+	path = bpftool
+	url = https://github.com/libbpf/bpftool.git
+[submodule "libbpf"]
+	path = libbpf
+	url = https://github.com/libbpf/libbpf.git
