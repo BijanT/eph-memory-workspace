@@ -44,7 +44,7 @@ int BPF_KPROBE(handle_mm_fault, struct vm_area_struct *vma,
 
     if (trace_tgid == 0) {
         bpf_get_current_comm(&comm, TASK_COMM_LEN);
-        if (bpf_strncmp(target_comm, TASK_COMM_LEN, (const char *)&comm) == 0) {
+        if (bpf_strncmp((const char *)&comm, TASK_COMM_LEN, target_comm) == 0) {
             trace_tgid = tgid;
         }
 	    return 0;
