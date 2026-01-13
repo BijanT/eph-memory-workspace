@@ -10,4 +10,4 @@ multi_alloc: multi_alloc.c
 	gcc $(CFLAGS) -o multi_alloc multi_alloc.c
 
 clean:
-	rm -f alloc_data
+	rm -f alloc_data multi_alloc
