@@ -12,5 +12,9 @@
 
 *.o
 
+# bpf stuff
+bpf/build/
+bpf/pf_trace
+
 ubmks/alloc_data
 ubmks/multi_alloc
