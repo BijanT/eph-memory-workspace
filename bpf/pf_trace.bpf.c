@@ -105,7 +105,8 @@ cleanup:
     return 0;
 }
 
-int handle_fault_kprobe(bool huge)
+SEC("kprobe/do_huge_pmd_anonymous_page")
+int BPF_KPROBE(do_huge_pmd_anonymous_page, struct vm_fault *vmf)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     pid_t tgid = pid_tgid >> 32;
@@ -120,21 +121,9 @@ int handle_fault_kprobe(bool huge)
         return 0;
     }
 
-    event->huge_fault = huge;
+    event->huge_fault = true;
 
     return 0;
-}
-
-SEC("kprobe/handle_pte_fault")
-int BPF_KPROBE(handle_pte_fault, struct vm_fault *vmf)
-{
-    return handle_fault_kprobe(false);
-}
-
-SEC("kprobe/do_huge_pmd_anonymous_page")
-int BPF_KPROBE(do_huge_pmd_anonymous_page, struct vm_fault *vmf)
-{
-    return handle_fault_kprobe(true);
 }
 
 SEC("kprobe/vma_alloc_folio_noprof")
