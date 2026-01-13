@@ -12,6 +12,9 @@ APPS := pf_trace
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 	| sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
 
+all: $(APPS)
+	@echo "Build complete."
+
 $(APPS): %: $(BUILD)/%.o $(BUILD)/%.bpf.o $(LIBBPF_OBJ)
 	gcc -g -Wall $< $(LIBBPF_OBJ) -lelf -lz -o $@
 
@@ -43,3 +46,6 @@ $(BUILD) $(BUILD)/libbpf:
 
 clean:
 	rm -rf $(BUILD) $(APPS)
+
+# Keep intermediate files
+.SECONDARY:
