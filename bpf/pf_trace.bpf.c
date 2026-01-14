@@ -79,8 +79,8 @@ int BPF_KRETPROBE(handle_mm_fault_ret, long ret)
         return 0;
     }
 
-    if (!ret) {
-        // Error occurred during the fault
+    if (ret) {
+        bpf_printk("handle_mm_fault failed. tgid=%d, ret=%ld", tgid, ret);
         goto cleanup;
     }
 
