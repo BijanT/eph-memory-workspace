@@ -110,6 +110,14 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "cloud-utils",
         "libvirt-daemon-system",
         "virtiofsd",
+        "libdw-dev",
+        "libdebuginfod-dev",
+        "systemtap-sdt-dev",
+        "llvm-dev",
+        "liblzma-dev",
+        "libbabeltrace-dev",
+        "libpfm4-dev",
+        "libtraceevent-dev",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -147,6 +155,14 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libnuma-dev",
         "llvm",
         "clang",
+        "llvm-dev",
+        "libdw-dev",
+        "libdebuginfod-dev",
+        "systemtap-sdt-dev",
+        "liblzma-dev",
+        "libbabeltrace-dev",
+        "libpfm4-dev",
+        "libtraceevent-dev",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -182,6 +198,8 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     let user_home = get_user_home_dir(ushell)?;
     // Where the results will be stored on the host
     let results_dir = dir!(&user_home, crate::RESULTS_DIR);
+    // Where the guest kernel source code is located
+    let guest_kernel_dir = dir!(&user_home, crate::GUEST_KERNEL_DIR);
     // Directory that contains the files used to define the VMs
     let vm_info_dir = dir!(&user_home, crate::WKSPC_DIR, "vms");
     // Directory to store VM disk images
@@ -198,11 +216,12 @@ fn setup_guest_vms<A: ToSocketAddrs>(
         "\\[GUEST_DISK_IMAGE\\]",
         "\\[CLOUD_INIT_IMAGE\\]",
         "\\[HOST_RESULTS_DIR\\]",
+        "\\[GUEST_KERNEL_DIR\\]",
     ];
 
     let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
     let qemu_path = "/usr/bin/qemu-system-x86_64";
-    let guest_kernel_bin = build_guest_kernel(ushell, &user_home, cfg)?;
+    let guest_kernel_bin = build_guest_kernel(ushell, &guest_kernel_dir, cfg)?;
 
     ushell.run(cmd!("mkdir -p {}", imgs_dir))?;
     ushell.run(cmd!("mkdir -p {}", domains_dir))?;
@@ -229,6 +248,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
             &ubuntu_img_path,
             &cloud_init_img_path,
             &results_dir,
+            &guest_kernel_dir,
         ];
         let sed_cmd = gen_sed_replace_cmd(&template_replace_from, &template_replace_to);
         ushell.run(cmd!(
@@ -262,12 +282,26 @@ fn setup_guest_vms<A: ToSocketAddrs>(
         vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpftool", "src")))?;
         vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpf")))?;
 
+        // Mount the guest kernel source so we can install perf
+        let kernel_mnt_dir = "/mnt/guest_kernel";
+        let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
+        vm_shell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
+        vm_shell.run(cmd!("mkdir -p {}", kernel_mnt_dir))?;
+        vm_shell.run(cmd!("sudo mount -t virtiofs guest_kernel_dir {}", kernel_mnt_dir))?;
+        vm_shell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
+        vm_shell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
+
         // Shutdown the VM after setup is complete
         ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
 
         // Setup port forwarding for SSH access to the VM
         ssh_port += 1;
     }
+
+    // After being shared to the VM, the libvirt user seems to own the
+    // kernel directory on the host. Change ownership back to the user, so
+    // that this script can run again fine later.
+    ushell.run(cmd!("sudo chown -R $USER {}", guest_kernel_dir))?;
 
     Ok(())
 }
@@ -354,10 +388,9 @@ fn create_ubuntu_img(
 
 fn build_guest_kernel(
     ushell: &SshShell,
-    user_home: &str,
+    guest_kernel_dir: &str,
     cfg: &Config,
 ) -> Result<String, ScailError> {
-    let guest_kernel_dir = dir!(user_home, crate::GUEST_KERNEL_DIR);
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
     let branch = cfg.guest_kernel_branch.unwrap_or("main");
@@ -371,13 +404,13 @@ fn build_guest_kernel(
     clone_git_repo(
         ushell,
         guest_kernel_repo,
-        Some(&guest_kernel_dir),
+        Some(guest_kernel_dir),
         Some(branch),
         &[],
     )?;
 
     let kernel_src = KernelSrc::Git {
-        repo_path: guest_kernel_dir.clone(),
+        repo_path: guest_kernel_dir.to_string(),
         commitish: branch.into(),
     };
     // Most of these options are probably already set in the default config, but just to be sure.
@@ -428,7 +461,7 @@ fn build_guest_kernel(
         extra_options: &config_options,
     };
 
-    let git_hash = libscail::get_git_hash(ushell, &guest_kernel_dir)?;
+    let git_hash = libscail::get_git_hash(ushell, guest_kernel_dir)?;
     let local_version = libscail::gen_local_version(branch, &git_hash);
 
     let kernel_artifacts = libscail::build_kernel(
@@ -440,6 +473,10 @@ fn build_guest_kernel(
         None,
         false,
     )?;
+
+    // Compile perf tool
+    let perf_path = dir!(guest_kernel_dir, "tools", "perf");
+    ushell.run(cmd!("make").cwd(&perf_path))?;
 
     Ok(kernel_artifacts.pkg_path)
 }
