@@ -3,10 +3,6 @@
 #include <bpf/bpf_tracing.h>
 #include "pf_trace.h"
 
-#ifndef TASK_COMM_LEN
-#define TASK_COMM_LEN 16
-#endif
-
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct {

@@ -29,18 +29,35 @@ int main(int argc, char **argv)
 {
     struct ring_buffer *rb = NULL;
     struct pf_trace_bpf *skel;
-    uint8_t *addr;
+    char *comm;
     int err = 0;
 
-    libbpf_set_print(libbpf_print_fn);
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <comm>\n", argv[0]);
+        return 1;
+    }
+    comm = argv[1];
 
-    skel = pf_trace_bpf__open_and_load();
-    if (!skel) {
-        fprintf(stderr, "Failed to open and load BPF skeleton\n");
+    if (strlen(comm) >= TASK_COMM_LEN) {
+        fprintf(stderr, "Command name too long (max %d characters)\n", TASK_COMM_LEN - 1);
         return 1;
     }
 
-    skel->bss->trace_tgid = getpid();
+    libbpf_set_print(libbpf_print_fn);
+
+    skel = pf_trace_bpf__open();
+    if (!skel) {
+        fprintf(stderr, "Failed to open BPF skeleton\n");
+        return 1;
+    }
+
+    strncpy(skel->rodata->target_comm, comm, TASK_COMM_LEN);
+
+    err = pf_trace_bpf__load(skel);
+    if (err) {
+        fprintf(stderr, "Failed to load BPF skeleton\n");
+        goto cleanup;
+    }
 
     err = pf_trace_bpf__attach(skel);
     if (err) {
@@ -58,15 +75,6 @@ int main(int argc, char **argv)
 
     printf("Tracing handle_mm_fault... Hit Ctrl-C to end.\n");
     while (1) {
-        addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (addr == MAP_FAILED) {
-            perror("mmap");
-            break;
-        }
-        *addr = 0;  // Trigger a page fault
-        munmap(addr, 4096);
-
         err = ring_buffer__poll(rb, 100);
         if (err == -EINTR) {
             break;
