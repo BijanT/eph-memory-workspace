@@ -28,7 +28,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 32 * 4096);
+    __uint(max_entries, 2048 * 4096);
 } rb SEC(".maps");
 
 const char target_comm[TASK_COMM_LEN] = "";
