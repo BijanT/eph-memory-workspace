@@ -16,11 +16,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     struct pf_trace_event *event = data;
 
-    printf("Page fault event: fault_time_ns=%lu, alloc_time_ns=%lu, flags=0x%x, huge_fault=%u\n",
-           event->fault_time_ns,
-           event->alloc_time_ns,
-           event->flags,
-           event->huge_fault);
+    printf("Page fault event: fault_time_ns=%lu, alloc_time_ns=%lu, " \
+        "zero_time_ns=%lu, flags=0x%x, huge_fault=%u\n",
+        event->fault_time_ns,
+        event->alloc_time_ns,
+        event->zero_time_ns,
+        event->flags,
+        event->huge_fault);
 
     return 0;
 }
