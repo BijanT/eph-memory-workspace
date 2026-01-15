@@ -27,6 +27,9 @@ struct Config {
     shrink_size: usize,
     strat: ShrinkStrategy,
 
+    thp: bool,
+    flamegraph: bool,
+
     #[timestamp]
     timestamp: Timestamp,
 }
@@ -57,6 +60,14 @@ pub fn cli_options() -> clap::Command {
                 .conflicts_with("balloon")
                 .group("strat")
         )
+        .arg(
+            arg!(--no_thp "Disable Transparent Huge Pages (THP) in the guest VM")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            arg!(--flamegraph "Collect FlameGraph data during the experiment")
+                .action(clap::ArgAction::SetTrue),
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -78,12 +89,16 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
             msg: "Must specify either --balloon or --hotunplug".to_string(),
         }));
     };
+    let thp = !sub_m.get_flag("no_thp");
+    let flamegraph = sub_m.get_flag("flamegraph");
 
     let cfg = Config {
         exp: "balloon-exp".to_string(),
         alloc_size,
         shrink_size,
         strat,
+        thp,
+        flamegraph,
         timestamp: Timestamp::now(),
     };
 
@@ -105,6 +120,7 @@ where
     let host_home = get_user_home_dir(&host_shell)?;
     let host_results_dir = dir!(&host_home, crate::RESULTS_DIR);
     let shrink_time_file = dir!(&host_results_dir, cfg.gen_file_name("shrink_time"));
+    let mut cmd_prefix = String::new();
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
 
@@ -142,6 +158,8 @@ where
     let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
+    let flamegraph_file = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph.svg"));
+    let perf_record_file = "/tmp/perf_record.out";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
     crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
@@ -152,10 +170,29 @@ where
     guest_shell.run(cmd!("sudo mkswap /swapfile"))?;
     guest_shell.run(cmd!("sudo swapon /swapfile"))?;
 
+    if cfg.thp {
+        guest_shell.run(cmd!(
+            "echo always | sudo tee /sys/kernel/mm/transparent_hugepage/enabled"
+        ))?;
+    } else {
+        guest_shell.run(cmd!(
+            "echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled"
+        ))?;
+    }
+
+    if cfg.flamegraph {
+        cmd_prefix.push_str(&format!(
+            "sudo perf record -F 99 -a -g -o {} ",
+            perf_record_file
+        ));
+    }
+
     guest_shell.spawn(
         cmd!(
-            "./ubmks/alloc_data {} | sudo tee {}",
+            "{} ./ubmks/alloc_data {} {} | sudo tee {}",
+            cmd_prefix,
             cfg.alloc_size,
+            if cfg.flamegraph { "halt" } else { "" },
             alloc_data_file
         )
         .cwd(&guest_wkspc),
@@ -234,6 +271,18 @@ where
         elapsed_time.as_secs_f64(),
         shrink_time_file
     ))?;
+
+    // If collecting FlameGraph data, process it now
+    if cfg.flamegraph {
+        guest_shell.run(cmd!(
+            "sudo perf script -i {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
+            perf_record_file
+        ))?;
+        guest_shell.run(cmd!(
+            "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
+            &flamegraph_file
+        ))?;
+    }
 
     host_shell.run(cmd!(
         "virsh -c {} shutdown {}",
