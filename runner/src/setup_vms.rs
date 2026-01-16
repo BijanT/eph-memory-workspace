@@ -172,6 +172,15 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     };
     clone_git_repo(ushell, flamegraph_repo, None, None, &[])?;
 
+    // Mount the guest kernel source so we can install perf
+    let kernel_mnt_dir = "/mnt/guest_kernel";
+    let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
+    ushell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
+    ushell.run(cmd!("mkdir -p {}", kernel_mnt_dir))?;
+    ushell.run(cmd!("sudo mount -t virtiofs guest_kernel_dir {}", kernel_mnt_dir))?;
+    ushell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
+    ushell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
+
     Ok(())
 }
 
@@ -287,15 +296,6 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     let guest_wkspc_dir = dir!(&guest_home, crate::WKSPC_DIR);
     vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpftool", "src")))?;
     vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpf")))?;
-
-    // Mount the guest kernel source so we can install perf
-    let kernel_mnt_dir = "/mnt/guest_kernel";
-    let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
-    vm_shell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
-    vm_shell.run(cmd!("mkdir -p {}", kernel_mnt_dir))?;
-    vm_shell.run(cmd!("sudo mount -t virtiofs guest_kernel_dir {}", kernel_mnt_dir))?;
-    vm_shell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
-    vm_shell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
 
     // Shutdown the VM after setup is complete
     ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
