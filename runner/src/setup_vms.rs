@@ -233,18 +233,16 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     ushell.run(cmd!("mkdir -p {}", domains_dir))?;
     ushell.run(cmd!("mkdir -p {}", results_dir))?;
 
+    // Create the VM images
     let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
+    let ubuntu_img_path = create_ubuntu_img(ushell, &imgs_dir)?;
 
     // Do setup for each VM
-    let mut ssh_port = crate::START_NAT_PORT;
-    for (vm_name, size_gb) in vms_list.iter() {
+    for (vm_name, _size_gb) in vms_list.iter() {
         // The domain template file for this VM
         let domain_template_path = dir!(&vm_info_dir, format!("{}.xml", vm_name));
         // The final domain XML file for this VM
         let domain_xml_path = dir!(&domains_dir, format!("{}.xml", vm_name));
-
-        // Create the VM disk image
-        let ubuntu_img_path = create_ubuntu_img(ushell, &imgs_dir, vm_name)?;
 
         // Now that we have all the files we need for the VM, we can create the domain XML
         let template_replace_to = [
@@ -272,37 +270,35 @@ fn setup_guest_vms<A: ToSocketAddrs>(
             crate::LIBVIRT_URI,
             domain_xml_path
         ))?;
-
-        // Reserve enough HugeTLB pages for the VM
-        ushell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-            size_gb * 512))?;
-
-        // Start the VM to set it up internally
-        let vm_shell = crate::start_and_connect_to_vm(ushell, vm_name, &host, ssh_port, None)?;
-
-        // Install dependencies and clone workspace inside the VM
-        install_guest_dependencies(&vm_shell)?;
-        clone_research_workspace(&vm_shell, cfg)?;
-        let guest_home = get_user_home_dir(&vm_shell)?;
-        let guest_wkspc_dir = dir!(&guest_home, crate::WKSPC_DIR);
-        vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpftool", "src")))?;
-        vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpf")))?;
-
-        // Mount the guest kernel source so we can install perf
-        let kernel_mnt_dir = "/mnt/guest_kernel";
-        let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
-        vm_shell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
-        vm_shell.run(cmd!("mkdir -p {}", kernel_mnt_dir))?;
-        vm_shell.run(cmd!("sudo mount -t virtiofs guest_kernel_dir {}", kernel_mnt_dir))?;
-        vm_shell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
-        vm_shell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
-
-        // Shutdown the VM after setup is complete
-        ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
-
-        // Setup port forwarding for SSH access to the VM
-        ssh_port += 1;
     }
+
+    // Install dependencies and workloads on the disk image that is shared by
+    // all VMs
+    let (vm_name, vm_size_gb) = vms_list[0];
+    // Reserve enough HugeTLB pages for the VM
+    ushell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
+        vm_size_gb * 512))?;
+    let vm_shell = crate::start_and_connect_to_vm(ushell, vm_name, &host,
+        crate::START_NAT_PORT, None)?;
+    // Install dependencies and clone workspace inside the VM
+    install_guest_dependencies(&vm_shell)?;
+    clone_research_workspace(&vm_shell, cfg)?;
+    let guest_home = get_user_home_dir(&vm_shell)?;
+    let guest_wkspc_dir = dir!(&guest_home, crate::WKSPC_DIR);
+    vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpftool", "src")))?;
+    vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpf")))?;
+
+    // Mount the guest kernel source so we can install perf
+    let kernel_mnt_dir = "/mnt/guest_kernel";
+    let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
+    vm_shell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
+    vm_shell.run(cmd!("mkdir -p {}", kernel_mnt_dir))?;
+    vm_shell.run(cmd!("sudo mount -t virtiofs guest_kernel_dir {}", kernel_mnt_dir))?;
+    vm_shell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
+    vm_shell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
+
+    // Shutdown the VM after setup is complete
+    ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
 
     // After being shared to the VM, the libvirt user seems to own the
     // kernel directory on the host. Change ownership back to the user, so
@@ -367,11 +363,10 @@ fn gen_sed_replace_cmd(replace_from: &[&str], replace_to: &[&str]) -> String {
 
 fn create_ubuntu_img(
     ushell: &SshShell,
-    imgs_dir: &str,
-    vm_name: &str,
+    imgs_dir: &str
 ) -> Result<String, ScailError> {
     let base_img_path = dir!(imgs_dir, "ubuntu_base.qcow2");
-    let img_path = dir!(imgs_dir, format!("{}.qcow2", vm_name));
+    let img_path = dir!(imgs_dir, "ubuntu_vm.qcow2");
     let ubuntu_img_url =
         "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img";
 
