@@ -6,6 +6,8 @@
 #include "pf_trace.h"
 #include "pf_trace.skel.h"
 
+const char* STOP_FILE = "/tmp/stop_pf_trace";
+
 static int libbpf_print_fn(enum libbpf_print_level level,
                 const char *format, va_list args)
 {
@@ -16,11 +18,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     struct pf_trace_event *event = data;
 
-    printf("Page fault event: fault_time_ns=%lu, alloc_time_ns=%lu, " \
-        "zero_time_ns=%lu, flags=0x%x, huge_fault=%u\n",
+    printf("fault_ns=%lu, alloc_ns=%lu, " \
+        "flags=0x%x, huge_fault=%u\n",
         event->fault_time_ns,
-        event->alloc_time_ns,
-        event->zero_time_ns,
+        event->alloc_time_ns + event->zero_time_ns,
         event->flags,
         event->huge_fault);
 
@@ -76,7 +77,7 @@ int main(int argc, char **argv)
     }
 
     printf("Tracing handle_mm_fault... Hit Ctrl-C to end.\n");
-    while (1) {
+    while (access(STOP_FILE, F_OK) == -1) {
         err = ring_buffer__poll(rb, 100);
         if (err == -EINTR) {
             break;
