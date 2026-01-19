@@ -29,6 +29,7 @@ struct Config {
 
     thp: bool,
     flamegraph: bool,
+    pf_trace: bool,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -68,6 +69,10 @@ pub fn cli_options() -> clap::Command {
             arg!(--flamegraph "Collect FlameGraph data during the experiment")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            arg!(--pf_trace "Collect page fault trace data during the experiment")
+                .action(clap::ArgAction::SetTrue),
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -91,6 +96,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     };
     let thp = !sub_m.get_flag("no_thp");
     let flamegraph = sub_m.get_flag("flamegraph");
+    let pf_trace = sub_m.get_flag("pf_trace");
 
     let cfg = Config {
         exp: "balloon-exp".to_string(),
@@ -99,6 +105,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         strat,
         thp,
         flamegraph,
+        pf_trace,
         timestamp: Timestamp::now(),
     };
 
@@ -159,6 +166,7 @@ where
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
     let flamegraph_file = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph.svg"));
+    let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let perf_record_file = "/tmp/perf_record.out";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
@@ -185,6 +193,20 @@ where
             "sudo perf record -F 99 -a -g -o {} ",
             perf_record_file
         ));
+    }
+
+    if cfg.pf_trace {
+        // More applications will be added, but this will do for now
+        let track_comm = "alloc_data";
+        guest_shell.run(cmd!("rm -f /tmp/stop_pf_trace"))?;
+        guest_shell.spawn(
+            cmd!(
+                "sudo {}/bpf/pf_trace {} > {}",
+                &guest_wkspc,
+                track_comm,
+                pf_trace_file
+            )
+        )?;
     }
 
     guest_shell.spawn(
@@ -282,6 +304,11 @@ where
             "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
             &flamegraph_file
         ))?;
+    }
+
+    if cfg.pf_trace {
+        // Stop the pf_trace program
+        guest_shell.run(cmd!("touch /tmp/stop_pf_trace"))?;
     }
 
     host_shell.run(cmd!(
