@@ -130,6 +130,7 @@ int BPF_KPROBE(do_huge_pmd_anonymous_page, struct vm_fault *vmf)
     return 0;
 }
 
+/*
 int timer_start(void *map)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -222,3 +223,4 @@ cleanup:
     bpf_map_delete_elem(&zero_events, &pid_tgid);
     return 0;
 }
+*/
