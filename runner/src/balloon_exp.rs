@@ -28,8 +28,6 @@ struct Config {
     strat: ShrinkStrategy,
 
     thp: bool,
-    flamegraph: bool,
-    pf_trace: bool,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -65,14 +63,6 @@ pub fn cli_options() -> clap::Command {
             arg!(--no_thp "Disable Transparent Huge Pages (THP) in the guest VM")
                 .action(clap::ArgAction::SetTrue),
         )
-        .arg(
-            arg!(--flamegraph "Collect FlameGraph data during the experiment")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            arg!(--pf_trace "Collect page fault trace data during the experiment")
-                .action(clap::ArgAction::SetTrue),
-        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -95,8 +85,6 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         }));
     };
     let thp = !sub_m.get_flag("no_thp");
-    let flamegraph = sub_m.get_flag("flamegraph");
-    let pf_trace = sub_m.get_flag("pf_trace");
 
     let cfg = Config {
         exp: "balloon-exp".to_string(),
@@ -104,8 +92,6 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         shrink_size,
         strat,
         thp,
-        flamegraph,
-        pf_trace,
         timestamp: Timestamp::now(),
     };
 
@@ -125,7 +111,6 @@ where
     let host_home = get_user_home_dir(&host_shell)?;
     let host_results_dir = dir!(&host_home, crate::RESULTS_DIR);
     let shrink_time_file = dir!(&host_results_dir, cfg.gen_file_name("shrink_time"));
-    let mut cmd_prefix = String::new();
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
 
@@ -163,9 +148,6 @@ where
     let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
-    let flamegraph_file = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph.svg"));
-    let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
-    let perf_record_file = "/tmp/perf_record.out";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
     crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
@@ -186,33 +168,10 @@ where
         ))?;
     }
 
-    if cfg.flamegraph {
-        cmd_prefix.push_str(&format!(
-            "sudo perf record -F 99 -a -g -o {} ",
-            perf_record_file
-        ));
-    }
-
-    if cfg.pf_trace {
-        // More applications will be added, but this will do for now
-        let track_comm = "alloc_data";
-        guest_shell.run(cmd!("rm -f /tmp/stop_pf_trace"))?;
-        guest_shell.spawn(
-            cmd!(
-                "sudo {}/bpf/pf_trace {} > {}",
-                &guest_wkspc,
-                track_comm,
-                pf_trace_file
-            )
-        )?;
-    }
-
     guest_shell.spawn(
         cmd!(
-            "{} ./ubmks/alloc_data {} {} | sudo tee {}",
-            cmd_prefix,
+            "./ubmks/alloc_data {} | sudo tee {}",
             cfg.alloc_size,
-            if cfg.flamegraph { "halt" } else { "" },
             alloc_data_file
         )
         .cwd(&guest_wkspc),
@@ -291,23 +250,6 @@ where
         elapsed_time.as_secs_f64(),
         shrink_time_file
     ))?;
-
-    // If collecting FlameGraph data, process it now
-    if cfg.flamegraph {
-        guest_shell.run(cmd!(
-            "sudo perf script -i {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
-            perf_record_file
-        ))?;
-        guest_shell.run(cmd!(
-            "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
-            &flamegraph_file
-        ))?;
-    }
-
-    if cfg.pf_trace {
-        // Stop the pf_trace program
-        guest_shell.run(cmd!("touch /tmp/stop_pf_trace"))?;
-    }
 
     host_shell.run(cmd!(
         "virsh -c {} shutdown {}",
