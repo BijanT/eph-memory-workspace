@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -7,6 +8,7 @@
 #include "pf_trace.skel.h"
 
 const char* STOP_FILE = "/tmp/stop_pf_trace";
+atomic_bool printing = false;
 
 static int libbpf_print_fn(enum libbpf_print_level level,
                 const char *format, va_list args)
@@ -18,11 +20,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     struct pf_trace_event *event = data;
 
+    printing = true;
     printf("%lu,%lu,0x%x,%u\n",
         event->fault_time_ns,
         event->alloc_time_ns + event->zero_time_ns,
         event->flags,
         event->huge_fault);
+    printing = false;
 
     return 0;
 }
@@ -85,6 +89,12 @@ int main(int argc, char **argv)
             break;
         }
     }
+
+    // Wait so we don't interrupt the output
+    while (printing) {
+        usleep(100);
+    }
+    fflush(stdout);
 
 cleanup:
     ring_buffer__free(rb);
