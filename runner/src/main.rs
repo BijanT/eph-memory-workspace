@@ -1,4 +1,5 @@
 mod balloon_exp;
+mod eph_exp;
 mod setup_vms;
 
 use clap::arg;
@@ -16,11 +17,15 @@ const VM_USERNAME: &str = "ubuntu";
 const LIBVIRT_URI: &str = "qemu:///system";
 const START_NAT_PORT: u16 = 2222;
 
+const VM_SIZE_GB: usize = 48;
+const NUM_VCPUS: usize = 2;
+
 fn run() -> Result<(), ScailError> {
     let matches = clap::Command::new("runner")
         .about("Jobserver runner application for the ephemeral memory research project")
         .arg(arg!(--print_results_path "Obselete"))
         .subcommand(crate::balloon_exp::cli_options())
+        .subcommand(crate::eph_exp::cli_options())
         .subcommand(crate::setup_vms::cli_options())
         .subcommand_required(true)
         .disable_version_flag(true)
@@ -28,6 +33,7 @@ fn run() -> Result<(), ScailError> {
 
     match matches.subcommand() {
         Some(("balloon_exp", sub_m)) => crate::balloon_exp::run(sub_m),
+        Some(("eph_exp", sub_m)) => crate::eph_exp::run(sub_m),
         Some(("setup_vms", sub_m)) => crate::setup_vms::run(sub_m),
         _ => unreachable!(),
     }

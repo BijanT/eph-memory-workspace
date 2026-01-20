@@ -116,8 +116,6 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    const VM_SIZE_GB: usize = 48;
-    const NUM_VCPUS: usize = 2;
     let vm_domain = match &cfg.strat {
         ShrinkStrategy::Balloon => "balloon_vm",
         ShrinkStrategy::HotUnplug => "hotplug_vm",
@@ -144,14 +142,14 @@ where
         .build();
 
     let mut vcpu_map: HashMap<usize, usize> = HashMap::new();
-    for i in 0..NUM_VCPUS {
+    for i in 0..crate::NUM_VCPUS {
         vcpu_map.insert(i, tctx.next().unwrap());
     }
 
     // Reserve enough HugeTLB pages for the VM
     host_shell.run(cmd!(
         "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-        VM_SIZE_GB * 512
+        crate::VM_SIZE_GB * 512
     ))?;
 
     let guest_shell = crate::start_and_connect_to_vm(
@@ -237,7 +235,7 @@ where
             ))?;
         }
         ShrinkStrategy::HotUnplug => {
-            let num_unplugs = (VM_SIZE_GB - cfg.shrink_size) / 2;
+            let num_unplugs = (crate::VM_SIZE_GB - cfg.shrink_size) / 2;
 
             if num_unplugs > 8 {
                 return Err(ScailError::new(ScailErrorType::InvalidValueError {
@@ -265,7 +263,7 @@ where
     loop {
         const MAX_WAIT_MS: usize = 5000;
         const MIN_WAIT_MS: usize = 500;
-        const ORIG_SIZE_KB: usize = VM_SIZE_GB * 1024 * 1024;
+        const ORIG_SIZE_KB: usize = crate::VM_SIZE_GB * 1024 * 1024;
         let guest_size_kb = host_shell
             .run(cmd!(
                 "virsh -c {} dommemstat {} | grep actual | awk '{{print $2}}'",
