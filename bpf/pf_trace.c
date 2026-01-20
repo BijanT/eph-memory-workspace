@@ -21,9 +21,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     struct pf_trace_event *event = data;
 
     printing = true;
-    printf("%lu,%lu,0x%x,%u\n",
+    printf("%lu,%x,%u\n",
         event->fault_time_ns,
-        event->alloc_time_ns + event->zero_time_ns,
         event->flags,
         event->huge_fault);
     printing = false;
@@ -79,7 +78,7 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    printf("fault_ns, alloc_ns, flags, huge_fault\n");
+    printf("fault_ns, flags (hex), huge_fault\n");
     while (access(STOP_FILE, F_OK) == -1) {
         err = ring_buffer__poll(rb, 100);
         if (err == -EINTR) {
