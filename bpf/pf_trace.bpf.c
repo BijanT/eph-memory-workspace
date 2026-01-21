@@ -83,18 +83,18 @@ int BPF_KRETPROBE(handle_mm_fault_ret, long ret)
         return 0;
     }
 
+    ts = bpf_ktime_get_ns();
+
     event = bpf_map_lookup_elem(&fault_events, &pid_tgid);
     if (!event) {
         bpf_printk("No event found in fault_events map. tgid=%d", tgid);
         return 0;
     }
 
-    if (ret) {
-        bpf_printk("handle_mm_fault failed. tgid=%d, ret=%ld", tgid, ret);
+    if (ret == VM_FAULT_RETRY) {
         goto cleanup;
     }
 
-    ts = bpf_ktime_get_ns();
     event->fault_time_ns = ts - event->fault_time_ns;
 
     e = bpf_ringbuf_reserve(&rb, sizeof(*event), 0);
