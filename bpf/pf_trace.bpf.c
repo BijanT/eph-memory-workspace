@@ -12,6 +12,7 @@ struct {
     __type(value, struct pf_trace_event);
 } fault_events SEC(".maps");
 
+/*
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 2048);
@@ -25,6 +26,7 @@ struct {
     __type(key, u64);
     __type(value, u64);
 } zero_events SEC(".maps");
+*/
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -57,8 +59,8 @@ int BPF_KPROBE(handle_mm_fault, struct vm_area_struct *vma,
 
     ts = bpf_ktime_get_ns();
     event.fault_time_ns = ts;
-    event.alloc_time_ns = 0;
-    event.zero_time_ns = 0;
+//    event.alloc_time_ns = 0;
+//    event.zero_time_ns = 0;
     event.flags = flags;
     event.huge_fault = 0;
 
