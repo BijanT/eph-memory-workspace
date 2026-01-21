@@ -34,7 +34,7 @@ struct Config {
 
 pub fn cli_options() -> clap::Command {
     clap::Command::new("eph_exp")
-	.about("Run ephemeral memory experiments")
+        .about("Run ephemeral memory experiments")
         .arg_required_else_help(true)
         .disable_version_flag(true)
         .arg(arg!(<hostname> "The domain:port of the remote"))
@@ -51,15 +51,15 @@ pub fn cli_options() -> clap::Command {
             arg!(--pf_trace "Collect page fault trace data during the experiment")
                 .action(clap::ArgAction::SetTrue),
         )
-	.subcommand(
-		clap::Command::new("alloc_data")
-		    .about("Allocate a specified amount of data in memory")
-		    .arg(
-			arg!(<size_gb> "Size of data to allocate in GB")
-			    .value_parser(clap::value_parser!(u64))
-			    .required(true)
-		    ),
-	)
+        .subcommand(
+            clap::Command::new("alloc_data")
+                .about("Allocate a specified amount of data in memory")
+                .arg(
+                    arg!(<size_gb> "Size of data to allocate in GB")
+                        .value_parser(clap::value_parser!(u64))
+                        .required(true),
+                ),
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -77,22 +77,20 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     // Parse subcommand
     let workload = match sub_m.subcommand() {
         Some(("alloc_data", alloc_m)) => {
-	        let size_gb: u64 = *alloc_m
-		    .get_one::<u64>("size_gb")
-		    .unwrap();
+            let size_gb: u64 = *alloc_m.get_one::<u64>("size_gb").unwrap();
 
-	        Workload::AllocData(size_gb)
-	    }
-	    _ => unreachable!(),
+            Workload::AllocData(size_gb)
+        }
+        _ => unreachable!(),
     };
 
     let config = Config {
-	    exp: "eph_exp".to_string(),
-	    workload,
-	    thp,
-	    flamegraph,
-	    pf_trace,
-	    timestamp: Timestamp::now(),
+        exp: "eph_exp".to_string(),
+        workload,
+        thp,
+        flamegraph,
+        pf_trace,
+        timestamp: Timestamp::now(),
     };
 
     run_inner(&login, &config)
@@ -176,14 +174,12 @@ where
 
     if cfg.pf_trace {
         guest_shell.run(cmd!("rm -f /tmp/stop_pf_trace"))?;
-        guest_shell.spawn(
-            cmd!(
-                "sudo {}/bpf/pf_trace {} > {}",
-                &guest_wkspc,
-                proc_name,
-                pf_trace_file
-            )
-        )?;
+        guest_shell.spawn(cmd!(
+            "sudo {}/bpf/pf_trace {} > {}",
+            &guest_wkspc,
+            proc_name,
+            pf_trace_file
+        ))?;
         // Give some time for the BPF program to be loaded and verified
         std::thread::sleep(std::time::Duration::from_secs(5));
     }

@@ -51,13 +51,13 @@ pub fn cli_options() -> clap::Command {
         .arg(
             arg!(--balloon "Use the balloon driver for memory shrinking")
                 .action(clap::ArgAction::SetTrue)
-                .group("strat")
+                .group("strat"),
         )
         .arg(
             arg!(--hotunplug "Use hot-unplug for memory shrinking")
                 .action(clap::ArgAction::SetTrue)
                 .conflicts_with("balloon")
-                .group("strat")
+                .group("strat"),
         )
         .arg(
             arg!(--no_thp "Disable Transparent Huge Pages (THP) in the guest VM")

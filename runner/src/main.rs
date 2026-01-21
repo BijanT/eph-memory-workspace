@@ -126,7 +126,9 @@ fn setup_port_forwarding(
         ))?;
     }
     // This command will do nothing if the PREROUTING chain already exists.
-    host_shell.run(cmd!("sudo nft -- add chain ip nat PREROUTING {{ type nat hook prerouting priority -100 \\; }}"))?;
+    host_shell.run(cmd!(
+        "sudo nft -- add chain ip nat PREROUTING {{ type nat hook prerouting priority -100 \\; }}"
+    ))?;
     // Add DNAT rule if it isn't already present.
     if !nft_rule_exists(host_shell, "nat", "PREROUTING", &prerouting_rule)? {
         host_shell.run(cmd!(

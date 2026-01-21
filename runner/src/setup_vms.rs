@@ -177,7 +177,10 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
     ushell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
     ushell.run(cmd!("mkdir -p {}", kernel_mnt_dir))?;
-    ushell.run(cmd!("sudo mount -t virtiofs guest_kernel_dir {}", kernel_mnt_dir))?;
+    ushell.run(cmd!(
+        "sudo mount -t virtiofs guest_kernel_dir {}",
+        kernel_mnt_dir
+    ))?;
     ushell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
     ushell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
 
@@ -285,10 +288,12 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // all VMs
     let (vm_name, vm_size_gb) = vms_list[0];
     // Reserve enough HugeTLB pages for the VM
-    ushell.run(cmd!("echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-        vm_size_gb * 512))?;
-    let vm_shell = crate::start_and_connect_to_vm(ushell, vm_name, &host,
-        crate::START_NAT_PORT, None)?;
+    ushell.run(cmd!(
+        "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
+        vm_size_gb * 512
+    ))?;
+    let vm_shell =
+        crate::start_and_connect_to_vm(ushell, vm_name, &host, crate::START_NAT_PORT, None)?;
     // Install dependencies and clone workspace inside the VM
     install_guest_dependencies(&vm_shell)?;
     clone_research_workspace(&vm_shell, cfg)?;
@@ -361,10 +366,7 @@ fn gen_sed_replace_cmd(replace_from: &[&str], replace_to: &[&str]) -> String {
     sed_cmd
 }
 
-fn create_ubuntu_img(
-    ushell: &SshShell,
-    imgs_dir: &str
-) -> Result<String, ScailError> {
+fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailError> {
     let base_img_path = dir!(imgs_dir, "ubuntu_base.qcow2");
     let img_path = dir!(imgs_dir, "ubuntu_vm.qcow2");
     let ubuntu_img_url =
