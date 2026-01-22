@@ -27,6 +27,7 @@ struct Config {
     thp: bool,
     flamegraph: bool,
     pf_trace: bool,
+    bpf_stats: bool,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -51,6 +52,11 @@ pub fn cli_options() -> clap::Command {
             arg!(--pf_trace "Collect page fault trace data during the experiment")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            arg!(--bpf_stats "Collect BPF overhead statistics during the experiment")
+                .action(clap::ArgAction::SetTrue)
+                .requires("pf_trace"),
+        )
         .subcommand(
             clap::Command::new("alloc_data")
                 .about("Allocate a specified amount of data in memory")
@@ -73,6 +79,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let thp = !sub_m.get_flag("no_thp");
     let flamegraph = sub_m.get_flag("flamegraph");
     let pf_trace = sub_m.get_flag("pf_trace");
+    let bpf_stats = sub_m.get_flag("bpf_stats");
 
     // Parse subcommand
     let workload = match sub_m.subcommand() {
@@ -90,6 +97,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         thp,
         flamegraph,
         pf_trace,
+        bpf_stats,
         timestamp: Timestamp::now(),
     };
 
@@ -146,6 +154,7 @@ where
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
     let flamegraph_file = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph.svg"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
+    let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
     let perf_record_file = "/tmp/perf_record.out";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
@@ -182,6 +191,10 @@ where
         ))?;
         // Give some time for the BPF program to be loaded and verified
         std::thread::sleep(std::time::Duration::from_secs(5));
+
+        if cfg.bpf_stats {
+            guest_shell.run(cmd!("echo 1 | sudo tee /proc/sys/kernel/bpf_stats_enabled"))?;
+        }
     }
 
     // Run the specified workload
@@ -212,6 +225,17 @@ where
     }
 
     if cfg.pf_trace {
+        // Collect BPF stats if enabled.
+        // This needs to happen before stopping pf_trace.
+        if cfg.bpf_stats {
+            guest_shell.run(cmd!("echo 0 | sudo tee /proc/sys/kernel/bpf_stats_enabled"))?;
+            guest_shell.run(cmd!(
+                "sudo {}/bpftool/src/bpftool prog show | tee {}",
+                &guest_wkspc,
+                bpf_stats_file
+            ))?;
+        }
+
         // Stop the pf_trace program
         guest_shell.run(cmd!("touch /tmp/stop_pf_trace"))?;
     }
