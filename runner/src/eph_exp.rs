@@ -25,7 +25,7 @@ struct Config {
     workload: Workload,
 
     thp: bool,
-    flamegraph: bool,
+    flamegraph: Option<u32>,
     pf_trace: bool,
     bpf_stats: bool,
 
@@ -45,8 +45,9 @@ pub fn cli_options() -> clap::Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
-            arg!(--flamegraph "Collect FlameGraph data during the experiment")
-                .action(clap::ArgAction::SetTrue),
+            arg!(--flamegraph [num_splits] "Collect FlameGraph data during the experiment")
+                .default_missing_value("1")
+                .value_parser(clap::value_parser!(u32)),
         )
         .arg(
             arg!(--pf_trace "Collect page fault trace data during the experiment")
@@ -77,7 +78,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         host: hostname.as_str(),
     };
     let thp = !sub_m.get_flag("no_thp");
-    let flamegraph = sub_m.get_flag("flamegraph");
+    let flamegraph = sub_m.get_one::<u32>("flamegraph").cloned();
     let pf_trace = sub_m.get_flag("pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
 
@@ -152,10 +153,11 @@ where
     let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
-    let flamegraph_file = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph.svg"));
+    let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
     let perf_record_file = "/tmp/perf_record.out";
+    let perf_script_file_stem = "/tmp/perf_script";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
     crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
@@ -174,7 +176,7 @@ where
         ))?;
     }
 
-    if cfg.flamegraph {
+    if cfg.flamegraph.is_some() {
         cmd_prefix.push_str(&format!(
             "sudo perf record -F 99 -a -g -o {} ",
             perf_record_file
@@ -213,15 +215,26 @@ where
     }
 
     // If collecting FlameGraph data, process it now
-    if cfg.flamegraph {
+    if let Some(num_splits) = cfg.flamegraph {
         guest_shell.run(cmd!(
-            "sudo perf script -i {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
-            perf_record_file
+            "sudo perf script -i {} | {}/scripts/split_perf_script.py {} {}",
+            perf_record_file,
+            &guest_wkspc,
+            num_splits,
+            perf_script_file_stem,
         ))?;
-        guest_shell.run(cmd!(
-            "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
-            &flamegraph_file
-        ))?;
+        for i in 0..num_splits {
+            let perf_script_file = format!("{}_{}.perfscript", perf_script_file_stem, i);
+            let flamegraph_file = format!("{}_{}.svg", &flamegraph_file_stem, i);
+            guest_shell.run(cmd!(
+                "cat {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
+                perf_script_file
+            ))?;
+            guest_shell.run(cmd!(
+                "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
+                flamegraph_file
+            ))?;
+        }
     }
 
     if cfg.pf_trace {
