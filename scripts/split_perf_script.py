@@ -25,10 +25,13 @@ if input_file is not sys.stdin:
 # By default `perf script` outputs lines like:
 #    <comm> <pid> [<cpu>] <timestamp>: <event>: <details>
 # followed by a stacktrace indented by a tab. Each event is separated by a blank line.
+# However, when tracking QEMU, it looks like this:
+#    CPU 0/KVM    1925   137.669195:     947954 cycles:P:
+# So we will use a regex to extract the timestamp from each line.
 #
 # We will look at the timestamps of the first and last events, and split the output
 # files into `num_splits` equal time intervals.
-trace_pattern = re.compile(r'^\S+\s+\d+\s+\[\d+\]\s+(\d+\.\d+):.*')
+trace_pattern = re.compile(r'^.*(\d+\.\d+):.*')
 
 # Find the first and last timestamps
 first_timestamp = None
