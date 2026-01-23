@@ -121,6 +121,12 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
+    // Clone FlameGraph
+    let flamegraph_repo = GitRepo::HttpsPublic {
+        repo: "github.com/brendangregg/FlameGraph.git",
+    };
+    clone_git_repo(ushell, flamegraph_repo, None, None, &[])?;
+
     // AppArmor may interfere with some experiments, so uninstall it.
     ushell.run(cmd!("sudo apt remove -y apparmor"))?;
 

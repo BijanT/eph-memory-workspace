@@ -10,7 +10,7 @@ use libscail::{
 
 use serde::{Deserialize, Serialize};
 
-use spurs::{Execute, cmd};
+use spurs::{Execute, SshShell, cmd};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Workload {
@@ -26,6 +26,7 @@ struct Config {
 
     thp: bool,
     flamegraph: Option<u32>,
+    host_flamegraph: Option<u32>,
     pf_trace: bool,
     bpf_stats: bool,
 
@@ -46,6 +47,11 @@ pub fn cli_options() -> clap::Command {
         )
         .arg(
             arg!(--flamegraph [num_splits] "Collect FlameGraph data during the experiment")
+                .default_missing_value("1")
+                .value_parser(clap::value_parser!(u32)),
+        )
+        .arg(
+            arg!(--host_flamegraph [num_splits] "Collect FlameGraph data on the host")
                 .default_missing_value("1")
                 .value_parser(clap::value_parser!(u32)),
         )
@@ -79,6 +85,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     };
     let thp = !sub_m.get_flag("no_thp");
     let flamegraph = sub_m.get_one::<u32>("flamegraph").cloned();
+    let host_flamegraph = sub_m.get_one::<u32>("host_flamegraph").cloned();
     let pf_trace = sub_m.get_flag("pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
 
@@ -97,6 +104,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         workload,
         thp,
         flamegraph,
+        host_flamegraph,
         pf_trace,
         bpf_stats,
         timestamp: Timestamp::now(),
@@ -114,10 +122,12 @@ where
     // Reboot the machine to start from a fresh slate
     let host_shell = crate::reboot_and_connect(login)?;
     let host_home = get_user_home_dir(&host_shell)?;
+    let host_wkspc = dir!(&host_home, crate::WKSPC_DIR);
     let host_results_dir = dir!(&host_home, crate::RESULTS_DIR);
     let mut cmd_prefix = String::new();
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
+    let host_flamegraph_file_stem = dir!(&host_results_dir, cfg.gen_file_name("host_flamegraph"));
 
     host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
     host_shell.run(cmd!(
@@ -156,8 +166,9 @@ where
     let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
+    // We can reuse these files for both guest and host because their tmp
+    // directories are different
     let perf_record_file = "/tmp/perf_record.out";
-    let perf_script_file_stem = "/tmp/perf_script";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
     crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
@@ -176,13 +187,6 @@ where
         ))?;
     }
 
-    if cfg.flamegraph.is_some() {
-        cmd_prefix.push_str(&format!(
-            "sudo perf record -F 99 -a -g -o {} ",
-            perf_record_file
-        ));
-    }
-
     if cfg.pf_trace {
         guest_shell.run(cmd!("rm -f /tmp/stop_pf_trace"))?;
         guest_shell.spawn(cmd!(
@@ -197,6 +201,20 @@ where
         if cfg.bpf_stats {
             guest_shell.run(cmd!("echo 1 | sudo tee /proc/sys/kernel/bpf_stats_enabled"))?;
         }
+    }
+
+    if cfg.flamegraph.is_some() {
+        cmd_prefix.push_str(&format!(
+            "sudo perf record -F 99 -a -g -o {} ",
+            perf_record_file
+        ));
+    }
+
+    if cfg.host_flamegraph.is_some() {
+        host_shell.spawn(cmd!(
+            "sudo perf record -F 99 -a -g -o {} -p $(pgrep qemu-system)",
+            perf_record_file
+        ))?;
     }
 
     // Run the specified workload
@@ -216,25 +234,25 @@ where
 
     // If collecting FlameGraph data, process it now
     if let Some(num_splits) = cfg.flamegraph {
-        guest_shell.run(cmd!(
-            "sudo perf script -i {} | {}/scripts/split_perf_script.py {} {}",
-            perf_record_file,
+        generate_flamegraph(
+            &guest_shell,
             &guest_wkspc,
+            perf_record_file,
+            &flamegraph_file_stem,
             num_splits,
-            perf_script_file_stem,
-        ))?;
-        for i in 0..num_splits {
-            let perf_script_file = format!("{}_{}.perfscript", perf_script_file_stem, i);
-            let flamegraph_file = format!("{}_{}.svg", &flamegraph_file_stem, i);
-            guest_shell.run(cmd!(
-                "cat {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
-                perf_script_file
-            ))?;
-            guest_shell.run(cmd!(
-                "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
-                flamegraph_file
-            ))?;
-        }
+        )?;
+    }
+    if let Some(num_splits) = cfg.host_flamegraph {
+        host_shell.run(cmd!("sudo pkill -INT perf"))?;
+        // Give the host user permissions to the results directory
+        host_shell.run(cmd!("sudo chown -R $USER {}", &host_results_dir))?;
+        generate_flamegraph(
+            &host_shell,
+            &host_wkspc,
+            perf_record_file,
+            &host_flamegraph_file_stem,
+            num_splits,
+        )?;
     }
 
     if cfg.pf_trace {
@@ -260,5 +278,35 @@ where
     ))?;
 
     println!("RESULTS: {}", dir!(host_results_dir, cfg.gen_file_name("")));
+    Ok(())
+}
+
+fn generate_flamegraph(
+    shell: &SshShell,
+    wkspc: &str,
+    perf_record_file: &str,
+    flamegraph_file_stem: &str,
+    num_splits: u32,
+) -> Result<(), ScailError> {
+    let perf_script_file_stem = "/tmp/perf_script";
+    shell.run(cmd!(
+        "sudo perf script -i {} | {}/scripts/split_perf_script.py {} {}",
+        perf_record_file,
+        wkspc,
+        num_splits,
+        perf_script_file_stem,
+    ))?;
+    for i in 0..num_splits {
+        let perf_script_file = format!("{}_{}.perfscript", perf_script_file_stem, i);
+        let flamegraph_file = format!("{}_{}.svg", &flamegraph_file_stem, i);
+        shell.run(cmd!(
+            "cat {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
+            perf_script_file
+        ))?;
+        shell.run(cmd!(
+            "./FlameGraph/flamegraph.pl /tmp/flamegraph > {}",
+            flamegraph_file
+        ))?;
+    }
     Ok(())
 }
