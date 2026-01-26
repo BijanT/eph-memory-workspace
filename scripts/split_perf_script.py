@@ -31,7 +31,7 @@ if input_file is not sys.stdin:
 #
 # We will look at the timestamps of the first and last events, and split the output
 # files into `num_splits` equal time intervals.
-trace_pattern = re.compile(r'^.*(\d+\.\d+):.*')
+trace_pattern = re.compile(r'^.* (\d+\.\d+):.*')
 
 # Find the first and last timestamps
 first_timestamp = None
