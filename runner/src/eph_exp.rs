@@ -212,9 +212,10 @@ where
 
     if cfg.host_flamegraph.is_some() {
         host_shell.spawn(cmd!(
-            "sudo perf record -F 99 -a -g -o {} -p $(pgrep qemu-system)",
+            "sudo perf kvm --host --guest record -F 99 -a -g -o {} -p $(pgrep qemu-system)",
             perf_record_file
         ))?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
     // Run the specified workload
