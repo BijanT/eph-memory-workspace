@@ -35,10 +35,11 @@ int main(int argc, char **argv)
     struct ring_buffer *rb = NULL;
     struct pf_trace_bpf *skel;
     char *comm;
+    int pid = 0;
     int err = 0;
 
     if (argc != 2) {
-        fprintf(stderr, "Usage: %s <comm>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <comm/pid>\n", argv[0]);
         return 1;
     }
     comm = argv[1];
@@ -56,7 +57,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    strncpy(skel->rodata->target_comm, comm, TASK_COMM_LEN);
+    pid = atoi(comm);
+    if (pid == 0) {
+        // Set target command name
+        strncpy(skel->rodata->target_comm, comm, TASK_COMM_LEN);
+    } else {
+        // Set target PID
+        skel->bss->trace_tgid = pid;
+    }
 
     err = pf_trace_bpf__load(skel);
     if (err) {
