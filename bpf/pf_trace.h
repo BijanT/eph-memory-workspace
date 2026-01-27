@@ -5,12 +5,18 @@
 #define TASK_COMM_LEN 16
 #endif
 
+enum pf_type {
+    PF_TYPE_BASE = 0,
+    PF_TYPE_THP = 1,
+    PF_TYPE_HUGETLB = 2,
+};
+
 struct pf_trace_event {
     unsigned long fault_time_ns;
 //    unsigned long alloc_time_ns;
 //    unsigned long zero_time_ns;
     unsigned int flags;
-    unsigned char huge_fault;
+    enum pf_type type;
     unsigned char pad[3];
 };
 

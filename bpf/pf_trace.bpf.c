@@ -62,7 +62,7 @@ int BPF_KPROBE(handle_mm_fault, struct vm_area_struct *vma,
 //    event.alloc_time_ns = 0;
 //    event.zero_time_ns = 0;
     event.flags = flags;
-    event.huge_fault = 0;
+    event.type = PF_TYPE_BASE;
 
     if(bpf_map_update_elem(&fault_events, &pid_tgid, &event, BPF_ANY)) {
         bpf_printk("Failed to update fault_events map. tgid=%d, address=0x%lx, flags=0x%x",
@@ -111,24 +111,37 @@ cleanup:
     return 0;
 }
 
-SEC("kprobe/do_huge_pmd_anonymous_page")
-int BPF_KPROBE(do_huge_pmd_anonymous_page, struct vm_fault *vmf)
+inline void mark_huge_fault(enum pf_type type)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     pid_t tgid = pid_tgid >> 32;
     struct pf_trace_event *event;
 
     if (tgid != trace_tgid) {
-        return 0;
+        return;
     }
 
     event = bpf_map_lookup_elem(&fault_events, &pid_tgid);
     if (!event) {
-        return 0;
+        return;
     }
 
-    event->huge_fault = true;
+    event->type = type;
+}
 
+SEC("kprobe/do_huge_pmd_anonymous_page")
+int BPF_KPROBE(do_huge_pmd_anonymous_page, struct vm_fault *vmf)
+{
+    mark_huge_fault(PF_TYPE_THP);
+    return 0;
+}
+
+SEC("kprobe/hugetlb_fault")
+int BPF_KPROBE(hugetlb_fault, struct mm_struct *mm, struct vm_area_struct *vma,
+        unsigned long address, unsigned int flags,
+        struct pt_regs *regs)
+{
+    mark_huge_fault(PF_TYPE_HUGETLB);
     return 0;
 }
 

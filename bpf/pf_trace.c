@@ -24,7 +24,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     printf("%lu,%x,%u\n",
         event->fault_time_ns,
         event->flags,
-        event->huge_fault);
+        event->type);
     printing = false;
 
     return 0;
