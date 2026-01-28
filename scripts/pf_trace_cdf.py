@@ -32,12 +32,14 @@ if __name__ == "__main__":
 	trace_file = sys.argv[1]
 	plot_file = sys.argv[2] if len(sys.argv) == 3 else None
 
-	base_times, huge_times = process_pf_trace(trace_file)
+	base_times, huge_times, hugetlb_times = process_pf_trace(trace_file)
 
-	if len(huge_times) == 0:
-		times_to_plot = base_times
-	else:
+	if len(hugetlb_times) > 0:
+		times_to_plot = hugetlb_times
+	elif len(huge_times) > 0:
 		times_to_plot = huge_times
+	else:
+		times_to_plot = base_times
 
 	median = np.median(times_to_plot)
 	max_val = np.max(times_to_plot)

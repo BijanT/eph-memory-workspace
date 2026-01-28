@@ -3,6 +3,7 @@ import csv
 def process_pf_trace(trace_file):
 	base_times = []
 	huge_times = []
+	hugetlb_times = []
 
 	with open(trace_file, 'r') as f:
 		reader = csv.reader(f)
@@ -10,16 +11,18 @@ def process_pf_trace(trace_file):
 		i = 0
 		for row in reader:
 			fault_ns = int(row[0])
-			huge_fault = int(row[2])
+			fault_type = int(row[2])
 
 			fault_us = fault_ns / 1000.0
-			if huge_fault:
-				huge_times.append(fault_us)
-			else:
+			if fault_type == 0:
 				base_times.append(fault_us)
+			elif fault_type == 1:
+				huge_times.append(fault_us)
+			elif fault_type == 2:
+				hugetlb_times.append(fault_us)
 
 			i += 1
 			if i % 100 == 0:
 				print(f"Processed {i} events", end='\r')
 
-	return base_times, huge_times
+	return base_times, huge_times, hugetlb_times
