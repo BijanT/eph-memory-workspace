@@ -113,6 +113,8 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libdw-dev",
         "libdebuginfod-dev",
         "systemtap-sdt-dev",
+        "clang",
+        "llvm",
         "llvm-dev",
         "liblzma-dev",
         "libbabeltrace-dev",
@@ -210,6 +212,8 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
     clone_git_repo(ushell, wkspc_repo, Some(&wkspc_dir), branch, SUBMODULES)?;
 
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "ubmks")))?;
+    ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpftool", "src")))?;
+    ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpf")))?;
 
     Ok(())
 }
@@ -303,10 +307,6 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // Install dependencies and clone workspace inside the VM
     install_guest_dependencies(&vm_shell)?;
     clone_research_workspace(&vm_shell, cfg)?;
-    let guest_home = get_user_home_dir(&vm_shell)?;
-    let guest_wkspc_dir = dir!(&guest_home, crate::WKSPC_DIR);
-    vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpftool", "src")))?;
-    vm_shell.run(cmd!("make").cwd(dir!(&guest_wkspc_dir, "bpf")))?;
 
     // Shutdown the VM after setup is complete
     ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
