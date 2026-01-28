@@ -28,6 +28,7 @@ struct Config {
     flamegraph: Option<u32>,
     host_flamegraph: Option<u32>,
     pf_trace: bool,
+    host_pf_trace: bool,
     bpf_stats: bool,
 
     #[timestamp]
@@ -60,6 +61,10 @@ pub fn cli_options() -> clap::Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            arg!(--host_pf_trace "Collect page fault trace data on host during the experiment")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
             arg!(--bpf_stats "Collect BPF overhead statistics during the experiment")
                 .action(clap::ArgAction::SetTrue)
                 .requires("pf_trace"),
@@ -87,6 +92,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let flamegraph = sub_m.get_one::<u32>("flamegraph").cloned();
     let host_flamegraph = sub_m.get_one::<u32>("host_flamegraph").cloned();
     let pf_trace = sub_m.get_flag("pf_trace");
+    let host_pf_trace = sub_m.get_flag("host_pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
 
     // Parse subcommand
@@ -106,6 +112,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         flamegraph,
         host_flamegraph,
         pf_trace,
+        host_pf_trace,
         bpf_stats,
         timestamp: Timestamp::now(),
     };
@@ -128,6 +135,8 @@ where
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
     let host_flamegraph_file_stem = dir!(&host_results_dir, cfg.gen_file_name("host_flamegraph"));
+    let host_pf_trace_tmp_file = "/tmp/host_pf_trace.out";
+    let host_pf_trace_file = dir!(&host_results_dir, cfg.gen_file_name("host_pf_trace"));
 
     host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
     host_shell.run(cmd!(
@@ -203,6 +212,17 @@ where
         }
     }
 
+    if cfg.host_pf_trace {
+        host_shell.run(cmd!("rm -f /tmp/stop_pf_trace"))?;
+        host_shell.spawn(cmd!(
+            "sudo {}/bpf/pf_trace $(pgrep qemu-system) > {}",
+            &host_wkspc,
+            host_pf_trace_tmp_file
+        ))?;
+        // Give some time for the BPF program to be loaded and verified
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
     if cfg.flamegraph.is_some() {
         cmd_prefix.push_str(&format!(
             "sudo perf record -F 99 -a -g -o {} ",
@@ -215,7 +235,7 @@ where
             "sudo perf kvm --host --guest record -F 99 -a -g -o {} -p $(pgrep qemu-system)",
             perf_record_file
         ))?;
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
     // Run the specified workload
@@ -243,17 +263,8 @@ where
             num_splits,
         )?;
     }
-    if let Some(num_splits) = cfg.host_flamegraph {
+    if cfg.host_flamegraph.is_some() {
         host_shell.run(cmd!("sudo pkill -INT perf"))?;
-        // Give the host user permissions to the results directory
-        host_shell.run(cmd!("sudo chown -R $USER {}", &host_results_dir))?;
-        generate_flamegraph(
-            &host_shell,
-            &host_wkspc,
-            perf_record_file,
-            &host_flamegraph_file_stem,
-            num_splits,
-        )?;
     }
 
     if cfg.pf_trace {
@@ -277,6 +288,28 @@ where
         crate::LIBVIRT_URI,
         VM_DOMAIN
     ))?;
+
+    // Give the host user permissions to the results directory
+    host_shell.run(cmd!("sudo chown -R $USER {}", &host_results_dir))?;
+    if cfg.host_pf_trace {
+        // Stop the pf_trace program
+        host_shell.run(cmd!("touch /tmp/stop_pf_trace"))?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        host_shell.run(cmd!(
+            "mv {} {}",
+            host_pf_trace_tmp_file,
+            host_pf_trace_file
+        ))?;
+    }
+    if let Some(num_splits) = cfg.host_flamegraph {
+        generate_flamegraph(
+            &host_shell,
+            &host_wkspc,
+            perf_record_file,
+            &host_flamegraph_file_stem,
+            num_splits,
+        )?;
+    }
 
     println!("RESULTS: {}", dir!(host_results_dir, cfg.gen_file_name("")));
     Ok(())
