@@ -15,6 +15,7 @@
 # bpf stuff
 bpf/build/
 bpf/pf_trace
+bpf/kvm_pf_trace
 
 ubmks/alloc_data
 ubmks/multi_alloc

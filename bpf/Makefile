@@ -7,7 +7,7 @@ LIBBPF_INC := $(LIBBPF_DIR)/include/uapi
 BPFTOOL_DIR := $(abspath ../bpftool/)
 BPFTOOL := $(BPFTOOL_DIR)/src/bpftool
 INCLUDES := -I$(LIBBPF_INC) -I$(BUILD)
-APPS := pf_trace
+APPS := pf_trace kvm_pf_trace
 
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 	| sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
