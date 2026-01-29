@@ -21,9 +21,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     struct kvm_pf_trace_event *event = data;
 
     printing = true;
-    printf("%lu,%lx\n",
+    printf("%lu,%d\n",
         event->fault_time_ns,
-        event->error_code);
+        event->fault_type);
     printing = false;
 
     return 0;

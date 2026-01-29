@@ -17,6 +17,9 @@ struct {
     __uint(max_entries, 2048 * 4096);
 } rb SEC(".maps");
 
+#define PFERR_GUEST_FINAL_MASK ((unsigned long)1 << 32)
+#define PFERR_GUEST_PAGE_MASK  ((unsigned long)1 << 33)
+
 const char target_comm[TASK_COMM_LEN] = "";
 pid_t trace_tgid = 0;
 
@@ -43,7 +46,12 @@ int BPF_KPROBE(kvm_mmu_page_fault, struct kvm_vcpu *vcpu, gpa_t gpa,
 
     ts = bpf_ktime_get_ns();
     event.fault_time_ns = ts;
-    event.error_code = error_code;
+    if (error_code & PFERR_GUEST_FINAL_MASK)
+        event.fault_type = FAULT_TYPE_GUEST_FINAL;
+    else if (error_code & PFERR_GUEST_PAGE_MASK)
+        event.fault_type = FAULT_TYPE_GUEST_PAGE;
+    else
+        event.fault_type = FAULT_TYPE_NONE;
 
     if(bpf_map_update_elem(&fault_events, &pid_tgid, &event, BPF_ANY)) {
         bpf_printk("Failed to update fault_events map. tgid=%d, address=0x%lx, error_code=0x%x",
