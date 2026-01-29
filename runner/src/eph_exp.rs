@@ -31,6 +31,7 @@ struct Config {
     host_pf_trace: bool,
     host_kvm_pf_trace: bool,
     bpf_stats: bool,
+    host_perf_stat: bool,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -66,9 +67,17 @@ pub fn cli_options() -> clap::Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            arg!(--host_kvm_pf_trace "Collect trace data on host for kvm_mmu page fault()")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
             arg!(--bpf_stats "Collect BPF overhead statistics during the experiment")
                 .action(clap::ArgAction::SetTrue)
                 .requires("pf_trace"),
+        )
+        .arg(
+            arg!(--host_perf_stat "Collect perf stat data on host during the experiment")
+                .action(clap::ArgAction::SetTrue),
         )
         .subcommand(
             clap::Command::new("alloc_data")
@@ -96,6 +105,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let host_pf_trace = sub_m.get_flag("host_pf_trace");
     let host_kvm_pf_trace = sub_m.get_flag("host_kvm_pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
+    let host_perf_stat = sub_m.get_flag("host_perf_stat");
 
     // Parse subcommand
     let workload = match sub_m.subcommand() {
@@ -117,6 +127,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         host_pf_trace,
         host_kvm_pf_trace,
         bpf_stats,
+        host_perf_stat,
         timestamp: Timestamp::now(),
     };
 
@@ -142,6 +153,7 @@ where
     let host_pf_trace_file = dir!(&host_results_dir, cfg.gen_file_name("host_pf_trace"));
     let host_kvm_pf_trace_tmp_file = "/tmp/host_kvm_pf_trace.out";
     let host_kvm_pf_trace_file = dir!(&host_results_dir, cfg.gen_file_name("host_kvm_pf_trace"));
+    let host_perf_stat_file = dir!(&host_results_dir, cfg.gen_file_name("host_perf_stat"));
 
     host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
     host_shell.run(cmd!(
@@ -254,6 +266,22 @@ where
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
+    if cfg.host_perf_stat {
+        let events = vec![
+            "dtlb_load_misses.miss_causes_a_walk",
+            "dtlb_store_misses.miss_causes_a_walk",
+            "dtlb_load_misses.walk_duration",
+            "dtlb_store_misses.walk_duration",
+        ];
+        let event_str = events.join(" -e ");
+        host_shell.spawn(cmd!(
+            "sudo perf stat -a -p $(pgrep qemu-system) -I 75 -e {} -o {} -- sleep 10000",
+            event_str,
+            host_perf_stat_file
+        ))?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
     // Run the specified workload
     match &cfg.workload {
         Workload::AllocData(size_gb) => {
@@ -279,7 +307,7 @@ where
             num_splits,
         )?;
     }
-    if cfg.host_flamegraph.is_some() {
+    if cfg.host_flamegraph.is_some() || cfg.host_perf_stat{
         host_shell.run(cmd!("sudo pkill -INT perf"))?;
     }
 
