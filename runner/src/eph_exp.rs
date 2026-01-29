@@ -29,6 +29,7 @@ struct Config {
     host_flamegraph: Option<u32>,
     pf_trace: bool,
     host_pf_trace: bool,
+    host_kvm_pf_trace: bool,
     bpf_stats: bool,
 
     #[timestamp]
@@ -93,6 +94,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let host_flamegraph = sub_m.get_one::<u32>("host_flamegraph").cloned();
     let pf_trace = sub_m.get_flag("pf_trace");
     let host_pf_trace = sub_m.get_flag("host_pf_trace");
+    let host_kvm_pf_trace = sub_m.get_flag("host_kvm_pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
 
     // Parse subcommand
@@ -113,6 +115,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         host_flamegraph,
         pf_trace,
         host_pf_trace,
+        host_kvm_pf_trace,
         bpf_stats,
         timestamp: Timestamp::now(),
     };
@@ -137,6 +140,8 @@ where
     let host_flamegraph_file_stem = dir!(&host_results_dir, cfg.gen_file_name("host_flamegraph"));
     let host_pf_trace_tmp_file = "/tmp/host_pf_trace.out";
     let host_pf_trace_file = dir!(&host_results_dir, cfg.gen_file_name("host_pf_trace"));
+    let host_kvm_pf_trace_tmp_file = "/tmp/host_kvm_pf_trace.out";
+    let host_kvm_pf_trace_file = dir!(&host_results_dir, cfg.gen_file_name("host_kvm_pf_trace"));
 
     host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
     host_shell.run(cmd!(
@@ -223,6 +228,17 @@ where
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
 
+    if cfg.host_kvm_pf_trace {
+        host_shell.run(cmd!("rm -f /tmp/stop_kvm_pf_trace"))?;
+        host_shell.spawn(cmd!(
+            "sudo {}/bpf/kvm_pf_trace $(pgrep qemu-system) > {}",
+            &host_wkspc,
+            host_kvm_pf_trace_tmp_file
+        ))?;
+        // Give some time for the BPF program to be loaded and verified
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+
     if cfg.flamegraph.is_some() {
         cmd_prefix.push_str(&format!(
             "sudo perf record -F 99 -a -g -o {} ",
@@ -299,6 +315,16 @@ where
             "mv {} {}",
             host_pf_trace_tmp_file,
             host_pf_trace_file
+        ))?;
+    }
+    if cfg.host_kvm_pf_trace {
+        // Stop the kvm_pf_trace program
+        host_shell.run(cmd!("touch /tmp/stop_kvm_pf_trace"))?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        host_shell.run(cmd!(
+            "mv {} {}",
+            host_kvm_pf_trace_tmp_file,
+            host_kvm_pf_trace_file
         ))?;
     }
     if let Some(num_splits) = cfg.host_flamegraph {
