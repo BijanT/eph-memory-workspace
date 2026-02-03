@@ -174,16 +174,19 @@ fn build_spark(ushell: &SshShell, work_dir: &str) -> Result<(), ScailError> {
         spark_src, cores
     ))?;
 
-    // Clone TPC-DS performance test
+    println!("Spark build completed. SPARK_HOME: {}", spark_src);
+
+    // Clone TPC-DS performance test if it doesn't exist
     let tpcds_test_dir = dir!(work_dir, "spark-tpc-ds-performance-test");
     ushell.run(cmd!(
         "cd {} && if [ ! -d \"spark-tpc-ds-performance-test\" ]; then git clone https://github.com/yslys/spark-tpc-ds-performance-test.git; fi",
         work_dir
     ))?;
 
-    println!("Spark build completed. SPARK_HOME: {}", spark_src);
     println!("TPC-DS performance test cloned at: {}", tpcds_test_dir);
-    println!("Remember to modify ./bin/tpcdsenv.sh to set SPARK_HOME appropriately");
+    println!("Modify ./bin/tpcdsenv.sh to set SPARK_HOME to /home/user/spark on VM, /mydata/spark on local machine.");
+    println!("Run ./bin/tpcdsspark.sh to generate tables and run queries.");
+    println!("The following steps requires using the performance tool interactively.");
 
     Ok(())
 }
