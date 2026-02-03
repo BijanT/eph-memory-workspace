@@ -149,6 +149,45 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     Ok(())
 }
 
+fn build_spark(ushell: &SshShell, work_dir: &str) -> Result<(), ScailError> {
+    let spark_version = "v3.5.1";
+    let spark_src = dir!(work_dir, "spark");
+    let cores = ushell.run(cmd!("nproc"))?.stdout.trim().to_string();
+
+    // Install Spark-specific dependencies
+    let spark_packages = [
+        "git", "wget", "curl", "openjdk-17-jdk",
+        "maven", "scala", "python3", "python3-pip",
+        "gcc", "g++", "make", "automake", "autoconf", "libtool",
+        "flex", "bison", "byacc",
+    ];
+    ushell.run(cmd!("sudo apt update"))?;
+    ushell.run(cmd!("sudo apt install -y {}", spark_packages.join(" ")))?;
+
+    // Clone Apache Spark if it doesn't exist
+    ushell.run(cmd!("if [ ! -d \"{}\" ]; then git clone https://github.com/apache/spark.git \"{}\"; fi", spark_src, spark_src))?;
+
+    // Checkout specific version and build Spark
+    ushell.run(cmd!("cd {} && git fetch --all && git checkout {}", spark_src, spark_version))?;
+    ushell.run(cmd!(
+        "cd {} && ./build/mvn -DskipTests -T {}C -Pyarn -Phive -Phive-thriftserver clean package",
+        spark_src, cores
+    ))?;
+
+    // Clone TPC-DS performance test
+    let tpcds_test_dir = dir!(work_dir, "spark-tpc-ds-performance-test");
+    ushell.run(cmd!(
+        "cd {} && if [ ! -d \"spark-tpc-ds-performance-test\" ]; then git clone https://github.com/yslys/spark-tpc-ds-performance-test.git; fi",
+        work_dir
+    ))?;
+
+    println!("Spark build completed. SPARK_HOME: {}", spark_src);
+    println!("TPC-DS performance test cloned at: {}", tpcds_test_dir);
+    println!("Remember to modify ./bin/tpcdsenv.sh to set SPARK_HOME appropriately");
+
+    Ok(())
+}
+
 fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
     const SUBMODULES: &[&str] = &["libscail"];
     let user_home = get_user_home_dir(ushell)?;
