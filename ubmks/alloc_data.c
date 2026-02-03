@@ -11,7 +11,6 @@ int main(int argc, char *argv[]) {
     time_t alloc_time_usec;
     time_t alloc_time_sec;
     time_t alloc_ms_remainder;
-    size_t pagesize = sysconf(_SC_PAGESIZE);
     bool wait = true;
 
     if (argc != 2 && argc != 3) {
@@ -23,6 +22,16 @@ int main(int argc, char *argv[]) {
         wait = false;
     }
 
+    // Initial allocations are a bit slow.
+    // So do a dummy allocation to get it out of the way.
+    void *tmp = mmap(NULL, 1024 * 1024 * 1024, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+    if (tmp == MAP_FAILED) {
+        perror("Initial dummy mmap failed");
+        return -1;
+    }
+    munmap(tmp, 1024 * 1024 * 1024);
+
     gettimeofday(&start, NULL);
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     if (ptr == MAP_FAILED) {
@@ -30,11 +39,6 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // Touch each page to populate them and place different data in each page
-    // to avoid kernel same-page merging.
-    for (size_t offset = 0; offset < size / sizeof(long); offset += pagesize / sizeof(long)) {
-        ((long *)ptr)[offset] = (long)(offset);
-    }
     gettimeofday(&stop, NULL);
 
     alloc_time_usec = (stop.tv_sec - start.tv_sec) * 1000000 +
