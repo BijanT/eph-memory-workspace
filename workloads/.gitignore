@@ -1,0 +1,4 @@
+# This directory will be shared with the virtual machines.
+# We want to place the TPC-DS data files here to not waste space inside the VMs.
+# So, we ignore the directory that we will put those files into.
+data/
