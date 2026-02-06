@@ -65,6 +65,11 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<!-- Tag to use to mount the results directory in the guest-->
 			<target dir="guest_kernel_dir"/>
 		</filesystem>
+		<filesystem type="mount" accessmode="passthrough">
+			<driver type="virtiofs" queue="1024"/>
+			<source dir="[WORKLOADS_DIR]"/>
+			<target dir="workloads_dir"/>
+		</filesystem>
 		<memballoon model="virtio" autodeflate="on" freePageReporting="on">
 			<stats period="2"/>
 		</memballoon>

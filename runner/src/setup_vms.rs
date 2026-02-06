@@ -65,6 +65,7 @@ where
 
     install_host_dependencies(&host_shell)?;
     clone_research_workspace(&host_shell, cfg)?;
+    build_spark_on_host(&host_shell)?;
 
     // The user needs to be in the KVM and libvirt groups to run VMs.
     host_shell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
@@ -93,7 +94,7 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "dwarves",
         "numactl",
         "linux-tools-common",
-        "openjdk-8-jdk",
+        "openjdk-17-jdk",
         "qemu-system",
         "python3",
         "python3-pip",
@@ -101,10 +102,14 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "curl",
         "bpfcc-tools",
         "maven",
+        "scala",
+        "libtool",
+        "automake",
         "autoconf",
         "pkgconf",
         "bison",
         "flex",
+        "byacc",
         "libnuma-dev",
         "cgroup-tools",
         "cloud-utils",
@@ -150,6 +155,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "dwarves",
         "numactl",
         "linux-tools-common",
+        "openjdk-17-jdk",
         "python3",
         "python3-pip",
         "cmake",
@@ -171,6 +177,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libbabeltrace-dev",
         "libpfm4-dev",
         "libtraceevent-dev",
+        "gcc-9", // Needed for tpcds-kit
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -179,6 +186,13 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         repo: "github.com/brendangregg/FlameGraph.git",
     };
     clone_git_repo(ushell, flamegraph_repo, None, None, &[])?;
+
+    // This is for generating data sources for TPC-DS with spark
+    let tpcds_kit_repo = GitRepo::HttpsPublic {
+        repo: "github.com/gregrahn/tpcds-kit.git",
+    };
+    clone_git_repo(ushell, tpcds_kit_repo, None, None, &[])?;
+    ushell.run(cmd!("make CC=gcc-9").cwd("tpcds-kit/tools"))?;
 
     // Mount the guest kernel source so we can install perf
     let kernel_mnt_dir = "/mnt/guest_kernel";
@@ -196,7 +210,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
 }
 
 fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
-    const SUBMODULES: &[&str] = &["bpftool", "libbpf", "libscail"];
+    const SUBMODULES: &[&str] = &["bpftool", "libbpf", "libscail", "workloads/spark"];
     let user_home = get_user_home_dir(ushell)?;
     let wkspc_dir = dir!(user_home, crate::WKSPC_DIR);
     let user = cfg.git_user.unwrap();
@@ -228,6 +242,8 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     let results_dir = dir!(&user_home, crate::RESULTS_DIR);
     // Where the guest kernel source code is located
     let guest_kernel_dir = dir!(&user_home, crate::GUEST_KERNEL_DIR);
+    // Where the workloads to use for experiments are located
+    let workloads_dir = dir!(&user_home, crate::WKSPC_DIR, "workloads");
     // Directory that contains the files used to define the VMs
     let vm_info_dir = dir!(&user_home, crate::WKSPC_DIR, "vms");
     // Directory to store VM disk images
@@ -245,6 +261,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
         "\\[CLOUD_INIT_IMAGE\\]",
         "\\[HOST_RESULTS_DIR\\]",
         "\\[GUEST_KERNEL_DIR\\]",
+        "\\[WORKLOADS_DIR\\]",
     ];
 
     let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
@@ -275,6 +292,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
             &cloud_init_img_path,
             &results_dir,
             &guest_kernel_dir,
+            &workloads_dir,
         ];
         let sed_cmd = gen_sed_replace_cmd(&template_replace_from, &template_replace_to);
         ushell.run(cmd!(
@@ -410,6 +428,9 @@ fn build_guest_kernel(
         secret,
     };
 
+    // VM stuff can make the guest kernel directory owned by root, so
+    // change it back to the user before proceeding if it already exists.
+    ushell.run(cmd!("sudo chown -R $USER {}", guest_kernel_dir).allow_error())?;
     clone_git_repo(
         ushell,
         guest_kernel_repo,
@@ -488,4 +509,25 @@ fn build_guest_kernel(
     ushell.run(cmd!("make").cwd(&perf_path))?;
 
     Ok(kernel_artifacts.pkg_path)
+}
+
+fn build_spark_on_host(shell: &SshShell) -> Result<(), ScailError> {
+    let user_home = libscail::get_user_home_dir(shell)?;
+    let workloads_dir = dir!(user_home, crate::WKSPC_DIR, "workloads");
+    let spark_dir = dir!(&workloads_dir, "spark");
+    let compile_cores = libscail::get_num_cores(shell)?;
+
+    // Being shared with the VM screws with ownvership, so make sure we have
+    // ownership before building again.
+    shell.run(cmd!("sudo chown -R $USER {}", workloads_dir))?;
+
+    shell.run(
+        cmd!(
+            "./build/mvn -T {}C -Pyarn -Phive -Phive-thriftserver -DskipTests clean package",
+            compile_cores
+        )
+        .cwd(&spark_dir)
+    )?;
+
+    Ok(())
 }
