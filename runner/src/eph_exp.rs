@@ -307,7 +307,7 @@ where
     }
 
     if cfg.host_perf_stat {
-        let events = vec![
+        let events = [
             "dtlb_load_misses.miss_causes_a_walk",
             "dtlb_store_misses.miss_causes_a_walk",
             "dtlb_load_misses.walk_duration",
