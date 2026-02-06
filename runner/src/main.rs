@@ -18,7 +18,7 @@ const LIBVIRT_URI: &str = "qemu:///system";
 const START_NAT_PORT: u16 = 2222;
 
 const VM_SIZE_GB: usize = 48;
-const NUM_VCPUS: usize = 2;
+const NUM_VCPUS: usize = 4;
 
 fn run() -> Result<(), ScailError> {
     let matches = clap::Command::new("runner")
