@@ -280,3 +280,21 @@ fn mount_guest_results(guest_shell: &SshShell, results_path: &str) -> Result<(),
 
     Ok(())
 }
+
+fn mount_workloads_dir(
+    guest_shell: &SshShell,
+    workloads_path: &str,
+) -> Result<(), ScailError> {
+    const MOUNT_TAG: &str = "workloads_dir";
+
+    guest_shell.run(cmd!(
+        "sudo mount -t virtiofs {} {}",
+        MOUNT_TAG,
+        workloads_path
+    ))?;
+    guest_shell.run(cmd!("sudo chown -R $USER {}", workloads_path))?;
+    // Spark also seems to care about the group
+    guest_shell.run(cmd!("sudo chgrp -R $USER {}", workloads_path))?;
+
+    Ok(())
+}

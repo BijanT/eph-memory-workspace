@@ -15,6 +15,10 @@ use spurs::{Execute, SshShell, cmd};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Workload {
     AllocData(u64),
+    Spark {
+        scale_factor: u64,
+        executor_mem_gb: u64,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
@@ -88,6 +92,20 @@ pub fn cli_options() -> clap::Command {
                         .required(true),
                 ),
         )
+        .subcommand(
+            clap::Command::new("spark")
+                .about("Run Spark with the TPC-DS workload")
+                .arg(
+                    arg!(--scale_factor <scale_factor> "Scale factor for TPC-DS data generation in GB")
+                        .value_parser(clap::value_parser!(u64))
+                        .required(true),
+                )
+                .arg(
+                    arg!(--executor_mem_gb <executor_mem_gb> "Size of executor memory in GB")
+                        .value_parser(clap::value_parser!(u64))
+                        .required(true),
+                ),
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -113,6 +131,12 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
             let size_gb: u64 = *alloc_m.get_one::<u64>("size_gb").unwrap();
 
             Workload::AllocData(size_gb)
+        }
+        Some(("spark", spark_m)) => {
+            let scale_factor: u64 = *spark_m.get_one::<u64>("scale_factor").unwrap();
+            let executor_mem_gb: u64 = *spark_m.get_one::<u64>("executor_mem_gb").unwrap();
+
+            Workload::Spark { scale_factor, executor_mem_gb }
         }
         _ => unreachable!(),
     };
@@ -187,8 +211,10 @@ where
     )?;
     let guest_home = get_user_home_dir(&guest_shell)?;
     let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
+    let guest_workloads_dir = dir!(&guest_home, "workloads");
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
+    let spark_file = dir!(&guest_results_dir, cfg.gen_file_name("spark"));
     let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
@@ -197,11 +223,25 @@ where
     let perf_record_file = "/tmp/perf_record.out";
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
+    guest_shell.run(cmd!("mkdir -p {}", &guest_workloads_dir))?;
     crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
+    crate::mount_workloads_dir(&guest_shell, &guest_workloads_dir)?;
 
     let proc_name = match &cfg.workload {
         Workload::AllocData(_) => "alloc_data",
+        // TODO: Find the actual Spark process name
+        // It's probably something like "java" or something
+        Workload::Spark { .. } => "TODO",
     };
+
+    if let Workload::Spark { scale_factor, .. } = &cfg.workload {
+        // Generate the TPC-DS database if needed
+        generate_spark_db(
+            &guest_shell,
+            *scale_factor,
+            &guest_workloads_dir,
+        )?;
+    }
 
     if cfg.thp {
         guest_shell.run(cmd!(
@@ -294,7 +334,22 @@ where
                 )
                 .cwd(&guest_wkspc),
             )?;
-        }
+        },
+        Workload::Spark { executor_mem_gb, .. } => {
+            let query_file = dir!(&guest_workloads_dir, "tpcds", "queries", "all.sql");
+            let spark_sql_bin = dir!(&guest_workloads_dir, "spark", "bin", "spark-sql");
+
+            guest_shell.run(
+                cmd!(
+                    "time {} {} --driver-memory 4g --executor-memory {}g --database tpcds -f {} | sudo tee {}",
+                    cmd_prefix,
+                    spark_sql_bin,
+                    executor_mem_gb,
+                    query_file,
+                    spark_file
+                )
+            )?;
+        },
     }
 
     // If collecting FlameGraph data, process it now
@@ -396,5 +451,55 @@ fn generate_flamegraph(
             flamegraph_file
         ))?;
     }
+    Ok(())
+}
+
+fn generate_spark_db(
+    guest_shell: &SshShell,
+    scale: u64,
+    guest_workloads_dir: &str,
+) -> Result<(), ScailError> {
+    let user_home = get_user_home_dir(guest_shell)?;
+    let tpcds_data_dir = dir!(guest_workloads_dir, "data");
+    let tpcds_ddl_dir = dir!(guest_workloads_dir, "tpcds", "ddl");
+    let tpcds_tools_dir = dir!(&user_home, "tpcds-kit", "tools");
+    let spark_sql_bin = dir!(guest_workloads_dir, "spark", "bin", "spark-sql");
+    let scale_factor_file = dir!(&tpcds_data_dir, "SCALE_FACTOR");
+
+    // If we have previosuly generated data at the same scale, skip data generation
+    if libscail::file_exists(guest_shell, &scale_factor_file)? {
+        let existing_scale: String = guest_shell.run(cmd!("cat {}", &scale_factor_file))?.stdout;
+        let existing_scale: u64 = existing_scale.trim().parse().unwrap();
+        if existing_scale == scale {
+            println!("TPC-DS data already exists at scale {}, skipping generation", scale);
+            return Ok(());
+        }
+    }
+
+    // Generate TPC-DS data
+    guest_shell.run(cmd!("mkdir -p {}", &tpcds_data_dir))?;
+    guest_shell.run(cmd!(
+        "./dsdgen -dir {} -scale {} -terminate N -force Y",
+        &tpcds_data_dir,
+        scale
+    ).cwd(&tpcds_tools_dir))?;
+
+    // Tell spark to create the database
+    guest_shell.run(cmd!(
+        "{} -e \"DROP DATABASE IF EXISTS tpcds CASCADE; CREATE DATABASE tpcds;\"",
+        spark_sql_bin
+    ))?;
+    guest_shell.run(cmd!(
+        "{} -d tpcds -f {}/create_tables.sql",
+        spark_sql_bin,
+        &tpcds_ddl_dir,
+    ))?;
+
+    // Make sure we update the scale factor file
+    guest_shell.run(cmd!(
+        "echo {} > {}",
+        scale,
+        &scale_factor_file
+    ))?;
     Ok(())
 }
