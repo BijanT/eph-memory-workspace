@@ -3,9 +3,11 @@ We can't determine absolute paths because they can change depending on the
 user/environment. So, we use placeholders in the form [PLACEHOLDER_NAME] that
 will be replaced with the actual paths by the scripts that use this XML file.
 -->
-<domain type="kvm">
+<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
 	<name>balloon_vm</name>
 	<memory unit="GiB">48</memory>
+	<memory unit="GiB">44</memory>
+	<currentMemory unit="GiB">44</currentMemory>
 	<memoryBacking>
 		<hugepages>
 			<page size="2" unit="M"/>
@@ -15,7 +17,7 @@ will be replaced with the actual paths by the scripts that use this XML file.
 	</memoryBacking>
 	<vcpu>4</vcpu>
 	<os>
-		<type>hvm</type>
+		<type machine="q35">hvm</type>
 		<kernel>[GUEST_KERNEL]</kernel>
 		<initrd>[GUEST_INITRD]</initrd>
 		<cmdline>console=ttyS0,115200n8 console=ttyS0</cmdline>
@@ -74,4 +76,18 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<stats period="2"/>
 		</memballoon>
 	</devices>
+	<qemu:commandline>
+		<qemu:arg value="-machine"/>
+		<qemu:arg value="cxl=on,hmat=on"/>
+		<qemu:arg value="-object"/>
+		<qemu:arg value="memory-backend-memfd,id=cxlmem0,size=4G,host-nodes=0,policy=bind,hugetlb=on,hugetlbsize=2M,share=on"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.1,addr=0x1e"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="cxl-rp,port=0,bus=cxl.0,id=rp0,chassis=0,slot=2"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="cxl-type3,bus=rp0,volatile-memdev=cxlmem0,id=cxlmem0"/>
+		<qemu:arg value="-M"/>
+		<qemu:arg value="cxl-fmw.0.targets.0=cxl.1,cxl-fmw.0.size=4G"/>
+	</qemu:commandline>
 </domain>
