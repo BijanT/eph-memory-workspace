@@ -215,6 +215,7 @@ where
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
     let spark_file = dir!(&guest_results_dir, cfg.gen_file_name("spark"));
+    let spark_time_file = dir!(&guest_results_dir, cfg.gen_file_name("spark_time"));
     let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
@@ -339,9 +340,10 @@ where
             let query_file = dir!(&guest_workloads_dir, "tpcds", "queries", "all.sql");
             let spark_sql_bin = dir!(&guest_workloads_dir, "spark", "bin", "spark-sql");
 
+            let start_time = std::time::Instant::now();
             guest_shell.run(
                 cmd!(
-                    "time {} {} --driver-memory 4g --executor-memory {}g --database tpcds -f {} | sudo tee {}",
+                    "{} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {}",
                     cmd_prefix,
                     spark_sql_bin,
                     executor_mem_gb,
@@ -349,7 +351,13 @@ where
                     spark_file
                 )
             )?;
-        },
+            let duration = start_time.elapsed().as_secs_f64();
+            guest_shell.run(cmd!(
+                "echo {:.3} | sudo tee {}",
+                duration,
+                spark_time_file
+             ))?;
+        }
     }
 
     // If collecting FlameGraph data, process it now
