@@ -19,6 +19,7 @@ pub fn cli_options() -> clap::Command {
 	.arg(arg!(--secret <secret> "Git personal access token or password for cloning private repos"))
 	.arg(arg!(--wkspc_branch <wkspc_branch> "(Optional) If passed, clone the specific workspace branch"))
 	.arg(arg!(--guest_kernel_branch <guest_kernel_branch> "(Optional) If passed, clone and build the specific guest kernel branch"))
+	.arg(arg!(--skip_spark_build "Skip building Spark on the host"))
 	.arg(arg!(--resize_root "(Option) Resize root partition to fill disk")
 		.action(ArgAction::SetTrue))
 }
@@ -28,6 +29,7 @@ struct Config<'a> {
     secret: Option<&'a str>,
     wkspc_branch: Option<&'a str>,
     guest_kernel_branch: Option<&'a str>,
+    skip_spark_build: bool,
     resize_root: bool,
 }
 
@@ -47,6 +49,7 @@ pub fn run(sub_m: &ArgMatches) -> Result<(), ScailError> {
         guest_kernel_branch: sub_m
             .get_one::<String>("guest_kernel_branch")
             .map(|s| s.as_str()),
+        skip_spark_build: sub_m.get_flag("skip_spark_build"),
         resize_root: sub_m.get_flag("resize_root"),
     };
 
@@ -65,7 +68,9 @@ where
 
     install_host_dependencies(&host_shell)?;
     clone_research_workspace(&host_shell, cfg)?;
-    build_spark_on_host(&host_shell)?;
+    if !cfg.skip_spark_build {
+        build_spark_on_host(&host_shell)?;
+    }
 
     // The user needs to be in the KVM and libvirt groups to run VMs.
     host_shell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
@@ -126,6 +131,8 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libpfm4-dev",
         "libtraceevent-dev",
         "guestmount",
+        "ninja-build",
+        "libglib2.0-dev",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -134,6 +141,15 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         repo: "github.com/brendangregg/FlameGraph.git",
     };
     clone_git_repo(ushell, flamegraph_repo, None, None, &[])?;
+
+    // Build DCD compatible version of QEMU
+    let qemu_repo = GitRepo::HttpsPublic {
+        repo: "github.com/qemu/qemu.git",
+    };
+    clone_git_repo(ushell, qemu_repo, None, Some("v11.0.0"), &[])?;
+    ushell.run(cmd!("mkdir -p build").cwd("qemu"))?;
+    ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd("qemu/build"))?;
+    ushell.run(cmd!("make -j$(nproc)").cwd("qemu/build"))?;
 
     // AppArmor may interfere with some experiments, so uninstall it.
     ushell.run(cmd!("sudo apt remove -y apparmor"))?;
@@ -179,6 +195,15 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libpfm4-dev",
         "libtraceevent-dev",
         "gcc-9", // Needed for tpcds-kit
+        "meson",
+        "libkmod-dev",
+        "libudev-dev",
+        "uuid-dev",
+        "libjson-c-dev",
+        "libtracefs-dev",
+        "asciidoctor",
+        "libkeyutils-dev",
+        "libiniparser-dev",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -195,7 +220,16 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     clone_git_repo(ushell, tpcds_kit_repo, None, None, &[])?;
     ushell.run(cmd!("make CC=gcc-9").cwd("tpcds-kit/tools"))?;
 
-    // Mount the guest kernel source so we can install perf and kernel modules
+    // Build the DCD fork of ndctl
+    let ndctl_repo = GitRepo::HttpsPublic {
+        repo: "github.com/weiny2/ndctl.git",
+    };
+    clone_git_repo(ushell, ndctl_repo, None, Some("dcd-region3-2025-04-13"), &[])?;
+    ushell.run(cmd!("meson setup build").cwd("ndctl"))?;
+    ushell.run(cmd!("meson compile -C build").cwd("ndctl"))?;
+    ushell.run(cmd!("sudo meson install -C build").cwd("ndctl"))?;
+
+    // Mount the guest kernel source so we can install perf
     let kernel_mnt_dir = "/mnt/guest_kernel";
     let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
     ushell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
@@ -270,7 +304,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     ushell.run(cmd!("mkdir -p {}", results_dir))?;
 
     let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
-    let qemu_path = "/usr/bin/qemu-system-x86_64";
+    let qemu_path = dir!(&user_home, "qemu", "build","qemu-system-x86_64");
     let guest_kernel_bin = build_guest_kernel(ushell, &guest_kernel_dir, cfg)?;
 
     // Create the VM images
@@ -286,14 +320,14 @@ fn setup_guest_vms<A: ToSocketAddrs>(
 
         // Now that we have all the files we need for the VM, we can create the domain XML
         let template_replace_to = [
-            &guest_kernel_bin,
-            &initramfs_path,
-            qemu_path,
-            &ubuntu_img_path,
-            &cloud_init_img_path,
-            &results_dir,
-            &guest_kernel_dir,
-            &workloads_dir,
+            guest_kernel_bin.as_str(),
+            initramfs_path.as_str(),
+            qemu_path.as_str(),
+            ubuntu_img_path.as_str(),
+            cloud_init_img_path.as_str(),
+            results_dir.as_str(),
+            guest_kernel_dir.as_str(),
+            workloads_dir.as_str(),
         ];
         let sed_cmd = gen_sed_replace_cmd(&template_replace_from, &template_replace_to);
         ushell.run(cmd!(
