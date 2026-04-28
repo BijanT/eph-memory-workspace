@@ -125,6 +125,7 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libbabeltrace-dev",
         "libpfm4-dev",
         "libtraceevent-dev",
+        "guestmount",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
@@ -194,7 +195,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     clone_git_repo(ushell, tpcds_kit_repo, None, None, &[])?;
     ushell.run(cmd!("make CC=gcc-9").cwd("tpcds-kit/tools"))?;
 
-    // Mount the guest kernel source so we can install perf
+    // Mount the guest kernel source so we can install perf and kernel modules
     let kernel_mnt_dir = "/mnt/guest_kernel";
     let perf_path = dir!(kernel_mnt_dir, "tools", "perf");
     ushell.run(cmd!("sudo chown -R $USER /mnt/").allow_error())?;
@@ -264,13 +265,13 @@ fn setup_guest_vms<A: ToSocketAddrs>(
         "\\[WORKLOADS_DIR\\]",
     ];
 
-    let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
-    let qemu_path = "/usr/bin/qemu-system-x86_64";
-    let guest_kernel_bin = build_guest_kernel(ushell, &guest_kernel_dir, cfg)?;
-
     ushell.run(cmd!("mkdir -p {}", imgs_dir))?;
     ushell.run(cmd!("mkdir -p {}", domains_dir))?;
     ushell.run(cmd!("mkdir -p {}", results_dir))?;
+
+    let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
+    let qemu_path = "/usr/bin/qemu-system-x86_64";
+    let guest_kernel_bin = build_guest_kernel(ushell, &guest_kernel_dir, cfg)?;
 
     // Create the VM images
     let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
@@ -325,6 +326,8 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // Install dependencies and clone workspace inside the VM
     install_guest_dependencies(&vm_shell)?;
     clone_research_workspace(&vm_shell, cfg)?;
+
+    vm_shell.run(cmd!("ls /lib/modules"))?;
 
     // Shutdown the VM after setup is complete
     ushell.run(cmd!("virsh -c {} shutdown {}", crate::LIBVIRT_URI, vm_name))?;
@@ -391,8 +394,11 @@ fn gen_sed_replace_cmd(replace_from: &[&str], replace_to: &[&str]) -> String {
 }
 
 fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailError> {
+    let user_home = get_user_home_dir(ushell)?;
     let base_img_path = dir!(imgs_dir, "ubuntu_base.qcow2");
     let img_path = dir!(imgs_dir, "ubuntu_vm.qcow2");
+    // Where we will mount the guest disk image to copy files to
+    let guest_img_mount_dir = dir!(&user_home, "guest_img_mount");
     let ubuntu_img_url =
         "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img";
 
@@ -410,6 +416,13 @@ fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailE
     // Increase the size of the image by 64GB
     ushell.run(cmd!("qemu-img resize {} +64G", img_path))?;
 
+    // Copy the kernel modules to /lib/modules on the guest
+    let kbuild_dir = dir!(&user_home, crate::GUEST_KERNEL_DIR, "kbuild");
+    ushell.run(cmd!("mkdir -p {}", guest_img_mount_dir))?;
+    ushell.run(cmd!("sudo guestmount -a {} -i {}", img_path, guest_img_mount_dir))?;
+    ushell.run(cmd!("sudo make modules_install INSTALL_MOD_PATH={}", guest_img_mount_dir).cwd(&kbuild_dir))?;
+    ushell.run(cmd!("sudo guestunmount {}", guest_img_mount_dir))?;
+
     Ok(img_path)
 }
 
@@ -421,6 +434,7 @@ fn build_guest_kernel(
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
     let branch = cfg.guest_kernel_branch.unwrap_or("main");
+    let kbuild_dir = dir!(guest_kernel_dir, "kbuild");
 
     let guest_kernel_repo = GitRepo::HttpsPrivate {
         repo: "github.com/BijanT/linux_eph_memory.git",
@@ -485,6 +499,11 @@ fn build_guest_kernel(
         ("CONFIG_BPF_SYSCALL", true),
         ("CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT", true),
         ("CONFIG_DEBUG_INFO_BTF", true),
+        ("CONFIG_CXL_REGION_INVALIDATION_TEST", true),
+        ("CONFIG_DAX", true),
+        ("CONFIG_DEV_DAX", true),
+        ("CONFIG_DEV_DAX_CXL", true),
+        ("CONFIG_ZONE_DEVICE", true),
     ];
     let kernel_config = KernelConfig {
         base_config: KernelBaseConfigSource::Defconfig,
@@ -503,6 +522,8 @@ fn build_guest_kernel(
         None,
         false,
     )?;
+
+    ushell.run(cmd!("make -j$(nproc) modules LOCALVERSION=-{}", &local_version).cwd(&kbuild_dir))?;
 
     // Compile perf tool
     let perf_path = dir!(guest_kernel_dir, "tools", "perf");
