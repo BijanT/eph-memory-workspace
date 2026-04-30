@@ -147,24 +147,19 @@ will be replaced with the actual paths by the scripts that use this XML file.
 				<size unit="GiB">2</size>
 			</target>
 		</memory>
-		<!--
-		  QEMU passthrough CXL example.
-		  This backend is additional host memory and is not counted by libvirt's <memory>.
-		  The guest machine still needs CXL enabled when the domain is started.
-		-->
-		<qemu:commandline>
-			<qemu:arg value="-machine"/>
-			<qemu:arg value="cxl=on,hmat=on"/>
-			<qemu:arg value="-object"/>
-			<qemu:arg value="memory-backend-memfd,id=mem0,size=4G,host-nodes=0,policy=bind,hugetlb=on,hugetlbsize=2M,share=on"/>
-			<qemu:arg value="-device"/>
-			<qemu:arg value="pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.0,addr=0x1e"/>
-			<qemu:arg value="-device"/>
-			<qemu:arg value="cxl-rp,port=0,bus=cxl.0,id=rp0,chassis=0,slot=2"/>
-			<qemu:arg value="-device"/>
-			<qemu:arg value="cxl-type3,bus=rp0,volatile-memdev=mem0,id=cxlmem0"/>
-			<qemu:arg value="-M"/>
-			<qemu:arg value="cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=4G"/>
-		</qemu:commandline>
 	</devices>
+	<qemu:commandline>
+		<qemu:arg value="-machine"/>
+		<qemu:arg value="cxl=on,hmat=on"/>
+		<qemu:arg value="-object"/>
+		<qemu:arg value="memory-backend-memfd,id=mem0,size=4G,host-nodes=0,policy=bind,hugetlb=on,hugetlbsize=2M,share=on"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.0,addr=0x1e"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="cxl-rp,port=0,bus=cxl.0,id=rp0,chassis=0,slot=2"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="cxl-type3,bus=rp0,num-dc-regions=1,volatile-dc-memdev=mem0,id=cxlmem0"/>
+		<qemu:arg value="-M"/>
+		<qemu:arg value="cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=4G"/>
+	</qemu:commandline>
 </domain>
