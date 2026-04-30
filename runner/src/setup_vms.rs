@@ -384,12 +384,20 @@ fn create_cloud_init_img(
     let user_data_template_path = dir!(vm_info_dir, "cloud.yaml");
     let user_data_path = dir!("/tmp", "cloud-user-data.yaml");
     let net_data_path = dir!(vm_info_dir, "cloud-net.yaml");
+    let authorized_keys_path = dir!(user_home, ".ssh", "authorized_keys");
+    let host_ssh_key_path = dir!(user_home, ".ssh", "id_ed25519");
+    let host_ssh_pub_key_path = format!("{}.pub", host_ssh_key_path);
 
     // Replace the SSH public key placeholder in the user data template file
     // with all of the keys in the remote's ~/.ssh/authorized_keys file.
+    // Also generate an SSH key on the host so we can access the VM from the
+    // host for testing without having to setup port forwarding.
     // Valid keys in the file are of the format "ssh-<key type> <key> <comment>"
+    if !libscail::file_exists(ushell, &host_ssh_pub_key_path)? {
+        ushell.run(cmd!("ssh-keygen -t ed25519 -f {} -N ''", host_ssh_key_path))?;
+    }
     let ssh_keys = ushell
-        .run(cmd!("cat {}/.ssh/authorized_keys", user_home))?
+        .run(cmd!("cat {} {}", authorized_keys_path, host_ssh_pub_key_path))?
         .stdout
         .lines()
         .filter(|line| line.trim().starts_with("ssh"))
