@@ -5,7 +5,7 @@ will be replaced with the actual paths by the scripts that use this XML file.
 -->
 <domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
 	<name>balloon_vm</name>
-	<memory unit="GiB">48</memory>
+	<maxMemory unit="GiB">48</maxMemory>
 	<memory unit="GiB">44</memory>
 	<currentMemory unit="GiB">44</currentMemory>
 	<memoryBacking>
@@ -82,12 +82,12 @@ will be replaced with the actual paths by the scripts that use this XML file.
 		<qemu:arg value="-object"/>
 		<qemu:arg value="memory-backend-memfd,id=cxlmem0,size=4G,host-nodes=0,policy=bind,hugetlb=on,hugetlbsize=2M,share=on"/>
 		<qemu:arg value="-device"/>
-		<qemu:arg value="pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.1,addr=0x1e"/>
+		<qemu:arg value="pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.0,addr=0x1e"/>
 		<qemu:arg value="-device"/>
 		<qemu:arg value="cxl-rp,port=0,bus=cxl.0,id=rp0,chassis=0,slot=2"/>
 		<qemu:arg value="-device"/>
 		<qemu:arg value="cxl-type3,bus=rp0,volatile-memdev=cxlmem0,id=cxlmem0"/>
 		<qemu:arg value="-M"/>
-		<qemu:arg value="cxl-fmw.0.targets.0=cxl.1,cxl-fmw.0.size=4G"/>
+		<qemu:arg value="cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=4G"/>
 	</qemu:commandline>
 </domain>
