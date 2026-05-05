@@ -16,7 +16,7 @@ int main(int argc, char *argv[]) {
     time_t alloc_time_sec;
     time_t alloc_ms_remainder;
     int fd;
-    int open_flags = O_RDWR | O_CREAT | O_TRUNC | O_TMPFILE;
+    int open_flags = O_RDWR | O_EXCL | O_TMPFILE;
 
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <size in pages> <mfs dir>\n", argv[0]);
@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
     munmap(tmp, 1024 * 1024 * 1024);
 
     gettimeofday(&start, NULL);
-    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, fd, 0);
+    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
     if (ptr == MAP_FAILED) {
         perror("mmap failed");
         return -1;
@@ -56,11 +56,14 @@ int main(int argc, char *argv[]) {
     alloc_ms_remainder = (alloc_time_usec % 1000000) / 1000;
 
     // Keep the memory allocated for a while to allow inspection
-    printf("Allocated %zu bytes of memory. In %ld.%ld seconds\n", size,
-        alloc_time_sec, alloc_ms_remainder);
+    printf("Allocated %zu bytes of memory. In %ld.%ld seconds %p\n", size,
+        alloc_time_sec, alloc_ms_remainder, ptr);
 
-    for (unsigned long i = 0; i < size; i += 4096) {
-	((char *)ptr)[i] = i % sizeof(char);
+    while (1) {
+        for (unsigned long i = 0; i < size; i += 4096) {
+            ((char *)ptr)[i] = i % sizeof(char);
+        }
+	sleep(1);
     }
 
     return 0;
