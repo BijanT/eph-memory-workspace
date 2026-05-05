@@ -546,6 +546,7 @@ fn build_guest_kernel(
         ("CONFIG_DEV_DAX", true),
         ("CONFIG_DEV_DAX_CXL", true),
         ("CONFIG_ZONE_DEVICE", true),
+        ("CONFIG_FS_DAX", true),
     ];
     let kernel_config = KernelConfig {
         base_config: KernelBaseConfigSource::Defconfig,
