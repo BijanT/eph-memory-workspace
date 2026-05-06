@@ -31,6 +31,11 @@ int main(int argc, char *argv[]) {
 	return -1;
     }
 
+    if (ftruncate(fd, size)) {
+        perror("Failed to truncate file!\n");
+        return -1;
+    }
+
     // Initial allocations are a bit slow.
     // So do a dummy allocation to get it out of the way.
     void *tmp = mmap(NULL, 1024 * 1024 * 1024, PROT_READ | PROT_WRITE,
