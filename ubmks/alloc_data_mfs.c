@@ -47,6 +47,10 @@ int main(int argc, char *argv[]) {
     munmap(tmp, 1024 * 1024 * 1024);
 
     gettimeofday(&start, NULL);
+    if (fallocate(fd, 0, 0, size)) {
+        perror("fallocate failes");
+	return -1;
+    }
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
     if (ptr == MAP_FAILED) {
         perror("mmap failed");
