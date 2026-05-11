@@ -70,7 +70,13 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         for (unsigned long i = 0; i < size; i += 4096) {
-            ((char *)ptr)[i] = i % sizeof(char);
+            ((char *)ptr)[i] = i % 256;
+        }
+        for (unsigned long i = 0; i < size; i += 4096) {
+            if (((char*)ptr)[i] != i % 256) {
+                printf("Mismatch at %ld: %d should be %ld\n",
+                    i, ((char*)ptr)[i], i % 256);
+            }
         }
 	sleep(1);
     }
