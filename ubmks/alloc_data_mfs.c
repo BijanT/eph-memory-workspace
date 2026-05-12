@@ -48,7 +48,7 @@ int main(int argc, char *argv[]) {
 
     gettimeofday(&start, NULL);
     if (fallocate(fd, 0, 0, size)) {
-        perror("fallocate failes");
+        perror("fallocate failed");
 	return -1;
     }
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
