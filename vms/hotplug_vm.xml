@@ -160,6 +160,6 @@ will be replaced with the actual paths by the scripts that use this XML file.
 		<qemu:arg value="-device"/>
 		<qemu:arg value="cxl-type3,bus=rp0,num-dc-regions=1,volatile-dc-memdev=mem0,id=cxlmem0"/>
 		<qemu:arg value="-M"/>
-		<qemu:arg value="cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=4G"/>
+		<qemu:arg value="cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=4G,cxl-fmw.0.use-ram=true"/>
 	</qemu:commandline>
 </domain>
