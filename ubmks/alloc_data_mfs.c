@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
         perror("fallocate failed");
 	return -1;
     }
-    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (ptr == MAP_FAILED) {
         perror("mmap failed");
         return -1;
