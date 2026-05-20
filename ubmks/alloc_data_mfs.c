@@ -4,6 +4,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <fcntl.h>
 
 #define PAGE_SIZE 4096
@@ -70,12 +71,12 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         for (unsigned long i = 0; i < size; i += 4096) {
-            ((char *)ptr)[i] = i % 256;
+            ((uint8_t *)ptr)[i] = (i / 4096) % 256;
         }
         for (unsigned long i = 0; i < size; i += 4096) {
-            if (((char*)ptr)[i] != i % 256) {
+            if (((uint8_t*)ptr)[i] != (i / 4096) % 256) {
                 printf("Mismatch at %ld: %d should be %ld\n",
-                    i, ((char*)ptr)[i], i % 256);
+                    i, ((uint8_t*)ptr)[i], (i / 4096) % 256);
             }
         }
 	sleep(1);
