@@ -21,3 +21,4 @@ ubmks/alloc_data
 ubmks/alloc_data_mfs
 ubmks/alloc_data_numa
 ubmks/multi_alloc
+ubmks/mfs_single_touch
