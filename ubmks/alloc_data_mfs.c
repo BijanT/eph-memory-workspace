@@ -28,8 +28,8 @@ int main(int argc, char *argv[]) {
 
     fd = open(mfs_dir, open_flags, 0600);
     if (fd == -1) {
-	perror("Failed to create temporary file in MFS");
-	return -1;
+        perror("Failed to create temporary file in MFS");
+        return -1;
     }
 
     if (ftruncate(fd, size)) {
@@ -50,7 +50,7 @@ int main(int argc, char *argv[]) {
     gettimeofday(&start, NULL);
     if (fallocate(fd, 0, 0, size)) {
         perror("fallocate failed");
-	return -1;
+        return -1;
     }
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (ptr == MAP_FAILED) {
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
                     i, ((uint8_t*)ptr)[i], (i / 4096) % 256);
             }
         }
-	sleep(1);
+        sleep(1);
     }
 
     return 0;
