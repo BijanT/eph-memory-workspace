@@ -7,8 +7,13 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sys/ioctl.h>
 
 #define PAGE_SIZE 4096
+
+#define EPHMFS_IOCTL_MAGIC 'e'
+#define EPHMFS_IOCTL_ATTEMPT_ON _IO(EPHMFS_IOCTL_MAGIC, 0)
+#define EPHMFS_IOCTL_ATTEMPT_OFF _IO(EPHMFS_IOCTL_MAGIC, 1)
 
 int main(int argc, char *argv[]) {
     struct timeval stop, start;
@@ -21,13 +26,15 @@ int main(int argc, char *argv[]) {
     int open_flags = O_RDWR | O_EXCL | O_TMPFILE;
     int *ptr;
     int rnd;
+    bool attempt;
 
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <mfs dir>\n", argv[0]);
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "Usage: %s <mfs dir> [attempt]\n", argv[0]);
         return -1;
     }
     size = (size_t)PAGE_SIZE;
     mfs_dir = argv[1];
+    attempt = (argc == 3) ? (bool)atoi(argv[2]) : false;
 
     srand(time(NULL));
     rnd = rand() % 1000000;
@@ -54,6 +61,14 @@ int main(int argc, char *argv[]) {
         perror("mmap failed");
         return -1;
     }
+
+    if (attempt) {
+        if (ioctl(fd, EPHMFS_IOCTL_ATTEMPT_ON) == -1) {
+            perror("ioctl failed");
+            return -1;
+        }
+    }
+
     *ptr = 0; // Touch the page to ensure it's allocated
 
     gettimeofday(&stop, NULL);
@@ -71,5 +86,12 @@ int main(int argc, char *argv[]) {
 
     *ptr = rnd;
     printf("Memory verification: Expected %d, got %d\n", rnd, *ptr);
+
+    if (attempt) {
+        if (ioctl(fd, EPHMFS_IOCTL_ATTEMPT_OFF) == -1) {
+            perror("ioctl failed");
+            return -1;
+        }
+    }
     return 0;
 }
