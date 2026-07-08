@@ -76,7 +76,8 @@ Each add capacity event may online the memory as a different DAX device, e.g., `
 It would be difficult for users to manage these different DAX devices and coordinate between multiple different applications by themselves, even with a user space library to help them.
 
 To help with this, the guest mounts a memory management filesystem [6], that we call `ephmfs`, to manage the guest's ephemeral memory capacity.
-Applications allocate ephemeral memory by creating and memory mapping a file in `ephmfs`'s mount directory, and `ephmfs` handles allocating the ephemeral memory between DAX devices and keeps metadata on what ranges of ephemeral memory have been revoked.
+Applications allocate ephemeral memory by creating and memory mapping `ephmfs` files, and `ephmfs` handles allocating the ephemeral memory between DAX devices and keeps metadata on what ranges of ephemeral memory have been revoked.
+To limit the risk of data being revoked, `ephmfs` prefers to allocate ephemeral memory to a file from devices that file has already allocated from (TODO).
 
 By default, a page fault to a mapped `ephmfs` file will result in the faulting thread receiving a `SIGSEGV` signal.
 In order to access the mapped file, the process must issue an `ioctl` to the file, telling `ephmfs` the process is in an attempt context.
@@ -92,19 +93,19 @@ The main functions in `libephmem` are the following:
 
 | Function | Description |
 | --- | --- |
-| `eph_alloc(size, &fd)` | Allocates `size` bytes from ephemeral memory, setting `fd` to the file descriptor of the `ephmfs` file the request is allocated from. Returns a pointer to ephemeral memory. |
-| `eph_free(eph_ptr)` | Free ephemeral memory |
-| `eph_put(src, dst, size)` | Copies `size` bytes from normal memory `src` to ephemeral memory `dst` |
-| `eph_get(src, dst, size)` | Copies `size` bytes from ephemeral memory `src` into normal memory `dst` |
-| `eph_enter_attempt(fd, recovery)` | Enter the attempt context for file `fd`. If a failure occurs, restart execution at `recovery` |
-| `eph_exit_attempt(fd)` | Exit the attempt context for file `fd` |
+| `eph_alloc(size)` | Allocates `size` bytes from ephemeral memory. Returns a handle to ephemeral memory. |
+| `eph_free(eph_handle)` | Free ephemeral memory |
+| `eph_put(src, dst, size)` | Copies `size` bytes from normal memory `src` to ephemeral memory handle `dst` |
+| `eph_get(src, dst, size)` | Copies `size` bytes from ephemeral memory handle `src` into normal memory `dst` |
+| `eph_enter_attempt(eph_handle, recovery)` | Enter the attempt context for `eph_handle`. If a failure occurs, restart execution at `recovery` |
+| `eph_exit_attempt(eph_handle)` | Exit the attempt context for `eph_handle` |
 
 Applications allocate ephemeral memory by calling `eph_alloc()`, which handles the details of creating a file in `ephmfs` and memory mapping that file.
 The simplest way to use ephemeral memory is through `eph_put/get()`, which are safe functions that applications can use to copy data to/from an ephemeral memory location.
 If a copy fails, the corresponding function will return an error.
 While the copy interface is simple, many applications would prefer to avoid a copy and access the data directly.
-Those applications can instead call `eph_enter_attempt()` to get direct access to the ephemeral memory of the selected `ephmfs` file.
-To handle recovery in case the ephemeral memory was revoked, the application must pass in a recovery address where execution will resume after `libephmem` handles the error recovery.
+Those applications can instead call `eph_enter_attempt()` to get direct access to the ephemeral memory of the selected handle.
+To allow for recovery in case the ephemeral memory was revoked, the application must pass in a recovery address where execution will resume after `libephmem` handles the error recovery.
 When the application is finished accessing ephemeral memory, it calls `eph_exit_attempt()` to remove its access to ephemeral memory in order to avoid accidental accesses.
 The `eph_put/get()` functions use `eph_enter/exit_attempt()` under the hood.
 
@@ -114,7 +115,36 @@ If it is, the signal handler will `longjmp/setcontext` to the recovery address, 
 If it is not, the signal handler will proceed to the default handling of the signal.
 Application writers should take care to ensure code inside attempt contexts does not take locks and is idempotent, as an error could occur at any place ephemeral memory is accessed.
 
+The default location `libephmem` will attempt to allocate `ephmfs` files from is `/mnt/ephmfs`.
+Users can override this by setting the `EPHMFS_DIR` environment variable.
+All `ephmfs` files created by `libephmem` are created with the `O_TMPFILE` flag, so they are automatically deleted if the process ends unexpectedly.
+
 `libephmem` will be implemented in this repository.
+
+### Allocator details
+We must design an allocator with which to allocate ephemeral memory using `eph_alloc()`.
+However, at the current stage of this project, we envision ephemeral memory to be used as a bulk data store.
+As such, the allocator does not need to be optimized for small allocations (e.g. below 4KB).
+Therefore, we will currently take the most simple approach of creating an `ephmfs` file for each call to `eph_alloc()`.
+This not only simplifies allocation, but also simplifies freeing and eliminates concerns of fragmentation.
+It also simplifies the `ephmfs` attempt mechanism, because the attempt `ioctl` can simply cover the whole file, instead of having to determine which ranges of a file the process is attempting to access.
+The downside is that each call to `eph_alloc` will suffer from the overhead of creating and mapping a file.
+There are other considerations such as a per-process `fd` limit and VMA limit.
+
+If the overhead of file creation proves to be significant, we will design a more sophisticated memory allocator, inspired by allocators such as Hoard [8] and Jemalloc [9], to manage `ephmfs` files in a way to minimize kernel boundary crossings.
+If we do decide to design a more sophisticated allocator, there are a couple of design considerations that we must be aware of due to the unpredictable nature of ephemeral memory.
+First, **we must be careful how we store metadata**.
+The original paper describing Jemalloc, for example, places bitmaps at the beginning of "runs" within the heap.
+We cannot do something similar in `libephmem` because a revocation that removes the allocator metadata may result in more ephemeral memory becoming inaccessible than what was revoked.
+Second, we should aim to **place similar allocations in the same file**.
+That way, the "blast radius" is limited, i.e., it is more likely that some data structures are completely revoked instead of many data structures being partially revoked.
+Note limiting the blast radius requires codesign between how `libephmem` groups allocations into files, how `ephmfs` packs files into DAX devices, and how the orchestrator decides what to revoke.
+
+A middle ground may also be to keep a pool of freed files for future allocations.
+The freed files may still free their ephemeral memory by calling `fallocate` with the `FALLOC_FL_PUNCH_HOLE` and `FALLOC_FL_KEEP_SIZE` flags so as not to hoard memory.
+Similarly, files can be reused for different sized allocations by modifying the file size by calling `ftruncate`, at the cost of having to re-map the file later.
+This approach mainly avoids the costs of creating files, but does not directly address concerns of `fd` and VMA limits.
+Additionally, we would have to develop some policy for capping/trimming the number of freed files we keep around.
 
 ## Donor Hypervisor
 
@@ -153,6 +183,10 @@ Revocation takes the following steps:
 2. The orchestrator informs the donor hypervisor that it has access to more memory
 3. On a donor hypervisor page fault, former consumer pages will be zeroed.
 
+To minimize communication overheads and to help ensure donors have enough of a buffer before the next revocation, capacity additions and revocations will happen at a granularity of 256MB.
+This may be reduced in the future if this proves to be too conservative.
+Overall, we suspect a larger revocation granularity will lead to fewer disruptions in the donor, while a smaller granularity will allow for more aggressive memory stealing.
+
 The orchestrator will be implemented in this repository.
 
 ## Setting
@@ -179,3 +213,5 @@ When a consumer requests ephemeral memory, its local orchestrator will attempt t
 [5] https://dl.acm.org/doi/abs/10.1145/3575693.3578835 <br>
 [6] https://www.usenix.org/conference/atc24/presentation/tabatabai <br>
 [7] https://dl.acm.org/doi/abs/10.1145/3447786.3456256 <br>
+[8] https://dl.acm.org/doi/abs/10.1145/356989.357000 <br>
+[9] https://people.freebsd.org/~jasone/jemalloc/bsdcan2006/jemalloc.pdf <br>
