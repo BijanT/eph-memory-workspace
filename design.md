@@ -42,8 +42,8 @@ This theft and revocation ideally happen completely transparently to the donor V
 
 In order to handle forceful revocations of ephemeral memory, consumer VMs must manually manage their ephemeral memory, especially because attempted accesses to revoked memory will result in bus errors.
 To help with this, ephemeral memory is not allowed to be accessed like normal memory.
-Instead, to access ephemeral memory, an application must first enter an "attempt" context, which works similarly to a `try` statement in programming languages with exception handling.
-Inside the attempt context, applications can access ephemeral memory freely, but if those accesses result in a failure, the exception will be handled and execution will return to a specified address.
+Instead, to access ephemeral memory, an application enters an "attempt" context with the ephemeral memory they want to access and the function they wish to compute on that memory.
+Inside the attempt context, applications can access ephemeral memory freely, but if those accesses result in a failure, the exception will be handled nicely and the caller will learn of the failure via a return value.
 
 We believe ephemeral memory will be useful for workloads that have "elastic" memory demands, i.e., workloads that benefit from having more memory but still function correctly with less memory [7].
 The data structures using ephemeral memory must also be able to tolerate data loss, as ephemeral memory cannot guarantee writing back dirty data.
@@ -79,10 +79,13 @@ To help with this, the guest mounts a memory management filesystem [6], that we 
 Applications allocate ephemeral memory by creating and memory mapping `ephmfs` files, and `ephmfs` handles allocating the ephemeral memory between DAX devices and keeps metadata on what ranges of ephemeral memory have been revoked.
 To limit the risk of data being revoked, `ephmfs` prefers to allocate ephemeral memory to a file from devices that file has already allocated from (TODO).
 
-By default, a page fault to a mapped `ephmfs` file will result in the faulting thread receiving a `SIGSEGV` signal.
+By default, a page fault to a mapped `ephmfs` file will result in the faulting thread receiving a `SIGSEGV` signal, causing the process to crash.
 In order to access the mapped file, the process must issue an `ioctl` to the file, telling `ephmfs` the process is in an attempt context.
 When leaving an attempt context, the process should issue another `ioctl` to the file to exit the attempt context.
 When no thread of a process is in the attempt context of the file, `ephmfs` will unmap the pages for the file, to make sure accesses only occur inside the attempt context.
+
+When ephemeral memory has been revoked, an access to that memory inside the attempt context must result in a synchronous `SIGBUS` signal.
+That way, `libephmem`'s signal handler can identify the address that caused the fault in order to verify the faulting address indeed belongs to ephemeral memory inside of an attempt context.
 
 The kernel source code we are currently running for the consumer guests, which includes the `ephmfs` module and the in-submission Linux DCD support, can be found at https://github.com/BijanT/linux_eph_memory in the `ephmfs-on-dcd-v10` branch.
 
@@ -95,25 +98,27 @@ The main functions in `libephmem` are the following:
 | --- | --- |
 | `eph_alloc(size)` | Allocates `size` bytes from ephemeral memory. Returns a handle to ephemeral memory. |
 | `eph_free(eph_handle)` | Free ephemeral memory |
-| `eph_put(src, dst, size)` | Copies `size` bytes from normal memory `src` to ephemeral memory handle `dst` |
-| `eph_get(src, dst, size)` | Copies `size` bytes from ephemeral memory handle `src` into normal memory `dst` |
-| `eph_enter_attempt(eph_handle, recovery)` | Enter the attempt context for `eph_handle`. If a failure occurs, restart execution at `recovery` |
-| `eph_exit_attempt(eph_handle)` | Exit the attempt context for `eph_handle` |
+| `eph_put(src, dst, offset, size)` | Copies `size` bytes from normal memory `src` to ephemeral memory handle `dst` at `offset`. |
+| `eph_get(src, dst, offset, size)` | Copies `size` bytes from ephemeral memory handle `src` at `offset` into normal memory `dst`. |
+| `eph_attempt(eph_handle, fn, arg)` | Enter the attempt context for `eph_handle`, running `fn` with the raw pointer of the ephemeral memory handle and `arg`. |
 
 Applications allocate ephemeral memory by calling `eph_alloc()`, which handles the details of creating a file in `ephmfs` and memory mapping that file.
 The simplest way to use ephemeral memory is through `eph_put/get()`, which are safe functions that applications can use to copy data to/from an ephemeral memory location.
 If a copy fails, the corresponding function will return an error.
 While the copy interface is simple, many applications would prefer to avoid a copy and access the data directly.
-Those applications can instead call `eph_enter_attempt()` to get direct access to the ephemeral memory of the selected handle.
-To allow for recovery in case the ephemeral memory was revoked, the application must pass in a recovery address where execution will resume after `libephmem` handles the error recovery.
-When the application is finished accessing ephemeral memory, it calls `eph_exit_attempt()` to remove its access to ephemeral memory in order to avoid accidental accesses.
-The `eph_put/get()` functions use `eph_enter/exit_attempt()` under the hood.
+Those applications can instead call `eph_attempt()` to get direct access to the ephemeral memory of the selected handle.
+`eph_attempt()` is called with the handle of the ephemeral memory to access, a function to access that ephemeral memory, and other arguments to call that function with.
+Inside of the attempt context, `libephmem` will gracefully handle revocations, allowing `eph_attempt()` to return an error indicating failure instead of crashing the application.
+Currently `eph_attempt()` has the restriction that a thread may not nest calls to `eph_attempt()`, though we plan to remove this restriction in the future.
+The `eph_put/get()` functions use `eph_attempt()` under the hood, so they cannot be called inside another attempt.
 
-Error handling in `libephmem` is done by installing a handler for `SIGBUS`.
+Error handling in `libephmem` is done by installing a handler for synchronous `SIGBUS` signals that include the faulting address.
 Inside the handler, `libephmem` checks if the faulting address is an ephemeral memory address that is currently in an attempt context.
-If it is, the signal handler will `longjmp/setcontext` to the recovery address, where the application may recompute the lost data.
+If it is, the signal handler will redirect execution to the recovery portion of `eph_attempt()`, which will return an error code to inform the caller of the failure.
 If it is not, the signal handler will proceed to the default handling of the signal.
 Application writers should take care to ensure code inside attempt contexts does not take locks and is idempotent, as an error could occur at any place ephemeral memory is accessed.
+Similarly, code inside attempt contexts should not throw exceptions that leave the attempt context or exit out of the attempt context in any way other than having `fn` return (such as a call to `longjmp`), as that will skip the cleanup of the attempt context.
+On failure, data written to by `fn`, such as return values in `arg` may be in an inconsistent state and should not be consumed by the callers.
 
 The default location `libephmem` will attempt to allocate `ephmfs` files from is `/mnt/ephmfs`.
 Users can override this by setting the `EPHMFS_DIR` environment variable.
