@@ -11,14 +11,3 @@
 *.img
 
 *.o
-
-# bpf stuff
-bpf/build/
-bpf/pf_trace
-bpf/kvm_pf_trace
-
-ubmks/alloc_data
-ubmks/alloc_data_mfs
-ubmks/alloc_data_numa
-ubmks/multi_alloc
-ubmks/mfs_single_touch
