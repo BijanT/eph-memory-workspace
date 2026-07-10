@@ -1,6 +1,12 @@
 CFLAGS = -Wall -Werror -D_GNU_SOURCE
+BINS = alloc_data
+BINS += alloc_data_mfs
+BINS += alloc_data_numa
+BINS += multi_alloc
+BINS += mfs_single_touch
+BINS += libephmem_test
 
-all: alloc_data alloc_data_mfs alloc_data_numa multi_alloc mfs_single_touch libephmem_test
+all: $(BINS)
 	@echo "Done"
 
 alloc_data: alloc_data.c
@@ -33,4 +39,4 @@ libephmem_test: libephmem_test.o ../libephmem/libephmem.a
 FORCE:
 
 clean:
-	rm -f alloc_data alloc_data_mfs alloc_data_numa multi_alloc mfs_single_touch libephmem_test libephmem_test.o
+	rm -f $(BINS) libephmem_test.o
