@@ -29,8 +29,9 @@ unsigned long total_time_us = 0;
 unsigned long recent_time_us = 0;
 // Total number of accesses to the blocks
 unsigned long total_accesses = 0;
-// Print the recent total and local throughput every LOG_INTERVAL accesses
-const unsigned long LOG_INTERVAL = 1000000;
+unsigned long recent_accesses = 0;
+// Print the recent total and local throughput every LOG_INTERVAL ms
+const unsigned long LOG_INTERVAL = 5000;
 
 long compute_block_sum(int *block, size_t block_size) {
 	long sum = 0;
@@ -176,6 +177,8 @@ int main(int argc, char *argv[]) {
 		eph_memory_rmap.push_back(-1);
 	}
 
+	auto print_deadline = std::chrono::steady_clock::now()
+		+ std::chrono::milliseconds(LOG_INTERVAL);
 	// Main Loop
 	while (true) {
 		auto start_time = std::chrono::steady_clock::now();
@@ -290,12 +293,16 @@ time_keeping:
 		total_time_us += duration.count();
 		recent_time_us += duration.count();
 		total_accesses++;
-		if (total_accesses % LOG_INTERVAL == 0) {
+		recent_accesses++;
+		if (std::chrono::steady_clock::now() >= print_deadline) {
 			std::cout << "Total accesses: " << total_accesses
 				<< ", Total tput (ops/sec): " << static_cast<double>(total_accesses) / (total_time_us / 1000000.0)
-				<< ", Recent tput (ops/sec): " << static_cast<double>(LOG_INTERVAL) / (recent_time_us / 1000000.0)
+				<< ", Recent tput (ops/sec): " << static_cast<double>(recent_accesses) / (recent_time_us / 1000000.0)
 				<< std::endl;
 			recent_time_us = 0;
+			recent_accesses = 0;
+			print_deadline = std::chrono::steady_clock::now()
+				+ std::chrono::milliseconds(LOG_INTERVAL);
 		}
 	}
 }
