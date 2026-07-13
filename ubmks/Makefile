@@ -5,6 +5,7 @@ BINS += alloc_data_numa
 BINS += multi_alloc
 BINS += mfs_single_touch
 BINS += libephmem_test
+BINS += libephmem_poc
 
 all: $(BINS)
 	@echo "Done"
@@ -29,6 +30,9 @@ libephmem_test.o: libephmem_test.c
 
 libephmem_test: libephmem_test.o ../libephmem/libephmem.a
 	g++ -o libephmem_test libephmem_test.o ../libephmem/libephmem.a
+
+libephmem_poc: libephmem_poc.cpp ../libephmem/libephmem.a
+	g++ $(CFLAGS) -O2 -o libephmem_poc -I../libephmem/ libephmem_poc.cpp ../libephmem/libephmem.a
 
 # Always run this target. If the library is up to date, libephmem's Makefile
 # will not rebuild it.
