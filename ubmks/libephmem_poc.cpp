@@ -25,11 +25,19 @@
 
 // Time spent accessing the blocks in us
 unsigned long total_time_us = 0;
-// Time spent accessing the blocks in us for the last LOG_INTERVAL accesses
+// Time spent accessing the blocks in us for the last LOG_INTERVAL ms
 unsigned long recent_time_us = 0;
 // Total number of accesses to the blocks
 unsigned long total_accesses = 0;
+// Recent accesses to the blocks in the last LOG_INTERVAL ms
 unsigned long recent_accesses = 0;
+// Per memory type stats in the last LOG_INTERVAL ms
+unsigned long main_mem_hit_time = 0;
+unsigned long eph_mem_hit_time = 0;
+unsigned long miss_time = 0;
+unsigned long main_mem_accesses = 0;
+unsigned long eph_mem_accesses = 0;
+unsigned long miss_accesses = 0;
 // Print the recent total and local throughput every LOG_INTERVAL ms
 const unsigned long LOG_INTERVAL = 5000;
 
@@ -188,6 +196,8 @@ int main(int argc, char *argv[]) {
 		int attempt_result;
 		int *block;
 		long sum;
+		bool main_mem_hit = false;
+		bool eph_mem_hit = false;
 
 		// Check if the block is in main memory
 		auto main_it = main_memory_set.find(block_id);
@@ -195,6 +205,7 @@ int main(int argc, char *argv[]) {
 			block = main_memory[main_it->second];
 			sum = compute_block_sum(block, BLOCK_SIZE);
 			asm volatile("" : : "r,m"(sum) : "memory"); // Prevent compiler optimization
+			main_mem_hit = true;
 			goto time_keeping;
 		}
 
@@ -215,6 +226,7 @@ int main(int argc, char *argv[]) {
 				return 1;
 			} else {
 				// Successfull ephemeral memory access
+				eph_mem_hit = true;
 				goto time_keeping;
 			}
 		}
@@ -294,13 +306,39 @@ time_keeping:
 		recent_time_us += duration.count();
 		total_accesses++;
 		recent_accesses++;
+		if (main_mem_hit) {
+			main_mem_hit_time += duration.count();
+			main_mem_accesses++;
+		} else if (eph_mem_hit) {
+			eph_mem_hit_time += duration.count();
+			eph_mem_accesses++;
+		} else {
+			miss_time += duration.count();
+			miss_accesses++;
+		}
 		if (std::chrono::steady_clock::now() >= print_deadline) {
 			std::cout << "Total accesses: " << total_accesses
 				<< ", Total tput (ops/sec): " << static_cast<double>(total_accesses) / (total_time_us / 1000000.0)
 				<< ", Recent tput (ops/sec): " << static_cast<double>(recent_accesses) / (recent_time_us / 1000000.0)
 				<< std::endl;
+			std::cout << "Main memory accesses: " << main_mem_accesses
+				<< ", Main memory hit latency (us): " << (main_mem_accesses > 0 ? static_cast<double>(main_mem_hit_time) / main_mem_accesses : 0)
+				<< std::endl;
+			std::cout << "Ephemeral memory accesses: " << eph_mem_accesses
+				<< ", Ephemeral memory hit latency (us): " << (eph_mem_accesses > 0 ? static_cast<double>(eph_mem_hit_time) / eph_mem_accesses : 0)
+				<< std::endl;
+			std::cout << "Miss accesses: " << miss_accesses
+				<< ", Miss latency (us): " << (miss_accesses > 0 ? static_cast<double>(miss_time) / miss_accesses : 0)
+				<< std::endl;
+			std::cout << std::endl;
 			recent_time_us = 0;
 			recent_accesses = 0;
+			main_mem_hit_time = 0;
+			main_mem_accesses = 0;
+			eph_mem_hit_time = 0;
+			eph_mem_accesses = 0;
+			miss_time = 0;
+			miss_accesses = 0;
 			print_deadline = std::chrono::steady_clock::now()
 				+ std::chrono::milliseconds(LOG_INTERVAL);
 		}
