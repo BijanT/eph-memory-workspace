@@ -64,8 +64,11 @@ void fill_block(int *block, size_t block_size, int value) {
  * wakeup overhead, or the sleep overshoots the deadline and the spin is a no-op.
  * Targets below SPIN_SLACK_US are spun in their entirety, and so do not yield
  * the CPU the way a real blocking read would.
+ * Set this relatively high to prevent the CPU from lowering its frequency while
+ * sleeping. Ideally, we would just pin the CPU frequency, but I don't have root
+ * privileges on my workstation.
  */
-const long SPIN_SLACK_US = 200;
+const long SPIN_SLACK_US = 5000;
 
 void mimic_block_read(long sleep_time_us) {
 	auto deadline = std::chrono::steady_clock::now() +
