@@ -8,16 +8,10 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <linux/ioctl.h>
 
 #include "libephmem.h"
-
-#define EPHMFS_IOCTL_MAGIC 'e'
-#define EPHMFS_IOCTL_ATTEMPT_ON _IO(EPHMFS_IOCTL_MAGIC, 0)
-#define EPHMFS_IOCTL_ATTEMPT_OFF _IO(EPHMFS_IOCTL_MAGIC, 1)
 
 static std::once_flag libephmem_initialized;
 static const char *EPHMFS_DIR_ENV_VAR = "EPHMFS_DIR";
@@ -153,8 +147,6 @@ void libephmem_free(struct libephmem_handle *handle) {
 
 int libephmem_attempt(struct libephmem_handle *handle, libephmem_attempt_fn fn,
 		      void *args) {
-	int ret;
-
 	if (handle == nullptr || fn == nullptr) {
 		fprintf(stderr, "libephmem_attempt: NULL handle or function pointer\n");
 		return -1;
@@ -167,22 +159,14 @@ int libephmem_attempt(struct libephmem_handle *handle, libephmem_attempt_fn fn,
 	if (!sigsetjmp(cur_attempt_context.env, 1)) {
 		cur_attempt_context.handle = handle;
 		cur_attempt_context.in_attempt = 1;
-		ret = ioctl(handle->file->fd, EPHMFS_IOCTL_ATTEMPT_ON);
-		if (ret) {
-			cur_attempt_context.in_attempt = 0;
-			perror("libephmem_attempt: attempt ioctl failed");
-			return -1;
-		}
 		fn(handle->ptr, handle->size, args);
 
 		cur_attempt_context.in_attempt = 0;
-		ioctl(handle->file->fd, EPHMFS_IOCTL_ATTEMPT_OFF);
 		return 0;
 	}
 
 	/* The attempt failed */
 	cur_attempt_context.in_attempt = 0;
-	ioctl(handle->file->fd, EPHMFS_IOCTL_ATTEMPT_OFF);
 	return 1;
 }
 
