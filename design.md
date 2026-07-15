@@ -41,9 +41,10 @@ However, when the donor is under memory pressure, the management software will f
 This theft and revocation ideally happen completely transparently to the donor VMs, and they should see minimal performance impact from having their memory stolen.
 
 In order to handle forceful revocations of ephemeral memory, consumer VMs must manually manage their ephemeral memory, especially because attempted accesses to revoked memory will result in bus errors.
-To help with this, ephemeral memory is not allowed to be accessed like normal memory.
+Because of this, ephemeral memory should not be accessed like normal memory.
 Instead, to access ephemeral memory, an application enters an "attempt" context with the ephemeral memory they want to access and the function they wish to compute on that memory.
 Inside the attempt context, applications can access ephemeral memory freely, but if those accesses result in a failure, the exception will be handled nicely and the caller will learn of the failure via a return value.
+Access to revoked ephemeral memory outside of the attempt context will result in an unrecoverable error in the application.
 
 We believe ephemeral memory will be useful for workloads that have "elastic" memory demands, i.e., workloads that benefit from having more memory but still function correctly with less memory [7].
 The data structures using ephemeral memory must also be able to tolerate data loss, as ephemeral memory cannot guarantee writing back dirty data.
@@ -79,13 +80,22 @@ To help with this, the guest mounts a memory management filesystem [6], that we 
 Applications allocate ephemeral memory by creating and memory mapping `ephmfs` files, and `ephmfs` handles allocating the ephemeral memory between DAX devices and keeps metadata on what ranges of ephemeral memory have been revoked.
 To limit the risk of data being revoked, `ephmfs` prefers to allocate ephemeral memory to a file from devices that file has already allocated from (TODO).
 
-By default, a page fault to a mapped `ephmfs` file will result in the faulting thread receiving a `SIGSEGV` signal, causing the process to crash.
-In order to access the mapped file, the process must issue an `ioctl` to the file, telling `ephmfs` the process is in an attempt context.
-When leaving an attempt context, the process should issue another `ioctl` to the file to exit the attempt context.
-When no thread of a process is in the attempt context of the file, `ephmfs` will unmap the pages for the file, to make sure accesses only occur inside the attempt context.
+When an `ephmfs` file is memory mapped into a process's address space it can be accessed directly, and `ephmfs` itself provides no recovery mechanisms to protect applications against revocation.
+When ephemeral memory has been revoked, an access to that memory will result in a synchronous `SIGBUS` signal.
+That way, user space code, i.e., the `libephmem` library described below, can register a signal handler to identify the address that caused the fault and do the recovery itself.
 
-When ephemeral memory has been revoked, an access to that memory inside the attempt context must result in a synchronous `SIGBUS` signal.
-That way, `libephmem`'s signal handler can identify the address that caused the fault in order to verify the faulting address indeed belongs to ephemeral memory inside of an attempt context.
+Previous versions of the design dictated that a page fault to a mapped `ephmfs` file would result in the faulting thread receiving a `SIGSEGV` signal, causing the process to crash, guarding against accidental access to ephemeral memory.
+In order to access the mapped file, the process would have to issue an `ioctl` to the file, telling `ephmfs` the process is in an attempt context.
+When leaving an attempt context, the process would issue another `ioctl` to the file to exit the attempt context.
+When no thread of a process is in the attempt context of the file, `ephmfs` would unmap the pages for the file, to make sure accesses only occur inside the attempt context.
+However, this design decision had two major downsides.
+The first is that it did not provide complete protection for ephemeral memory outside of attempt contexts.
+If one thread issued the `ioctl` enabling access, any other thread in the process would be able to access the same memory even when not in an attempt context itself.
+The second, more significant downside is that when issuing the `ioctl` to disable access, `ephmfs` would unmap all of the page table entries to that file to revoke access.
+Therefore, accessing that memory again would trigger page faults to pages it had previously faulted in during the last attempt.
+Even if the `ioctl` enabling access also repopulated the page tables all at once, the latency would still be significant.
+For these reasons, we abandoned this `ioctl` approach and have `ephmfs` always allow access to its mapped files.
+The responsibility of ensuring safe access to ephemeral memory lies solely with `libephmem`.
 
 The kernel source code we are currently running for the consumer guests, which includes the `ephmfs` module and the in-submission Linux DCD support, can be found at https://github.com/BijanT/linux_eph_memory in the `ephmfs-on-dcd-v10` branch.
 
@@ -132,7 +142,6 @@ However, at the current stage of this project, we envision ephemeral memory to b
 As such, the allocator does not need to be optimized for small allocations (e.g. below 4KB).
 Therefore, we will currently take the most simple approach of creating an `ephmfs` file for each call to `eph_alloc()`.
 This not only simplifies allocation, but also simplifies freeing and eliminates concerns of fragmentation.
-It also simplifies the `ephmfs` attempt mechanism, because the attempt `ioctl` can simply cover the whole file, instead of having to determine which ranges of a file the process is attempting to access.
 The downside is that each call to `eph_alloc` will suffer from the overhead of creating and mapping a file.
 There are other considerations such as a per-process `fd` limit and VMA limit.
 
