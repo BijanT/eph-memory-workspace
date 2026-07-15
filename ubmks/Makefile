@@ -1,4 +1,4 @@
-CFLAGS = -Wall -Werror -D_GNU_SOURCE
+CFLAGS = -Wall -Werror -D_GNU_SOURCE -g
 BINS = alloc_data
 BINS += alloc_data_mfs
 BINS += alloc_data_numa

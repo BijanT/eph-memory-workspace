@@ -1,4 +1,4 @@
-CXXFLAGS = -Wall -Werror -Wextra -std=c++17 -O2 -fPIC
+CXXFLAGS = -Wall -Werror -Wextra -std=c++17 -O2 -fPIC -g
 
 all: libephmem.a libephmem.so
 
