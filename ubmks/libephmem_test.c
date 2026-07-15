@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("Allocated %ld bytes of ephemeral memory at %p\n", libephmem_size(handle), libephmem_ptr(handle));
+    printf("Allocated %ld bytes of ephemeral memory\n", libephmem_size(handle));
     printf("Writing to ephemeral memory...\n");
 
     ret = libephmem_attempt(handle, fill_eph_mem, NULL);

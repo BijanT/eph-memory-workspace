@@ -16,13 +16,6 @@ extern "C" {
 struct libephmem_handle;
 
 /*
- * Converts a struct libephmem_handle pointer to a raw pointer to the
- * underlying ephemeral memory allocation.
- * @param handle: A pointer to a struct libephmem_handle.
- * @return: A pointer to the underlying ephemeral memory allocation.
- */
-void *libephmem_ptr(struct libephmem_handle *handle);
-/*
  * Gets the size of the ephemeral memory allocation associated with the specified handle.
  * @param handle: A pointer to a struct libephmem_handle representing the
  * ephemeral memory allocation.

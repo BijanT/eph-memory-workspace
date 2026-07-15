@@ -74,10 +74,6 @@ static void libephmem_init() {
 	}
 }
 
-void *libephmem_ptr(struct libephmem_handle *handle) {
-	return handle->ptr;
-}
-
 size_t libephmem_size(struct libephmem_handle *handle) {
 	return handle->size;
 }
