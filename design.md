@@ -52,11 +52,23 @@ For example, a candidate application is a distributed cache, where ephemeral mem
 
 The implementation of ephemeral memory needs coordination from several components.
 
+* **Consumer Hypervisor**: Exposes and revokes ephemeral memory to/from consumer VMs as dynamic capacity DAX devices.
 * **Consumer Guest**: Manages the ephemeral memory the consumer VM is given and provides a convenient library for using ephemeral memory.
 * **Donor Hypervisor**: Supports giving and revoking the donor VM's memory to/from the consumer VMs transparently to the donor VM.
 * **Orchestrator/Fabric Manager**: Decides which donor VMs to steal from for consumer memory, and manages revocation requests.
 
 We will describe these components in more detail in the following sections.
+
+## Consumer Hypervisor
+
+The consumer hypervisor is responsible for exposing ephemeral memory to consumer VMs when the orchestrator assigns it memory and taking away that memory from the consumer VMs when it has been revoked.
+
+The consumer hypervisor exposes ephemeral memory capacity to the consumer guests as emulated CXL dynamic capacity DAX devices (DCDs).
+Onlining memory as a DAX device ensures that ephemeral memory is only used by applications that specifically allocate it, preventing the kernel or unsuspecting applications from accidentally allocating ephemeral memory.
+This is in comparison to other dynamic memory allocation mechanisms in virtual machines, such as memory hot (un)plug and memory ballooning, which online new memory as system RAM.
+Using emulated CXL DCDs as the memory onlining mechanism is a slight semantic mismatch because real DCDs assign memory to hosts, not VMs.
+However, we choose to use it because the support for it already exists in QEMU, and its semantics, particularly the forced revocation functionality, align well with our needs.
+Our fork of QEMU that has expanded DCD support can be found here: https://github.com/BijanT/dcd_qemu.
 
 ## Consumer Guest
 
@@ -64,13 +76,6 @@ The consumer VM guest must be able to manage the ephemeral memory capacity that 
 It should also contain a library to make it easier for applications to safely use ephemeral memory.
 
 ### Management of Ephemeral Memory Capacity
-
-The orchestrator exposes ephemeral memory capacity to the consumer guests as emulated CXL dynamic capacity DAX devices (DCDs).
-Onlining memory as a DAX device ensures that ephemeral memory is only used by applications that specifically allocate it, preventing the kernel or unsuspecting applications from accidentally allocating ephemeral memory.
-This is in comparison to other dynamic memory allocation mechanisms in virtual machines, such as memory hot (un)plug and memory ballooning, which online new memory as system RAM.
-Using emulated CXL DCDs as the memory onlining mechanism is a slight semantic mismatch because real DCDs assign memory to hosts, not VMs.
-However, we choose to use it because the support for it already exists in QEMU, and its semantics, particularly the forced revocation functionality, align well with our needs.
-Our fork of QEMU that has expanded DCD support can be found here: https://github.com/BijanT/dcd_qemu.
 
 A single consumer VM can be given ephemeral memory from multiple dynamic add capacity events, either from multiple different donor VMs, or the same donor VM giving more memory as its demand decreases.
 Each add capacity event may online the memory as a different DAX device, e.g., `/dev/dax0.1`, `/dev/dax0.2`, etc.
@@ -182,19 +187,19 @@ We will utilize that idea for ephemeral memory.
 
 ## Orchestrator/Fabric Manager
 
-The orchestrator is what coordinates between the donor hypervisors and consumer VMs and runs on the host.
+The orchestrator is what coordinates between the donor hypervisors, consumer hypervisors, and consumer VMs and runs on the host.
 Each donor hypervisor sends the orchestrator information on how much of its memory is unutilized and can be given to consumer VMs.
 Consumer VMs request ephemeral memory from the orchestrator, via `libephmem`.
-If the orchestrator accepts the request, it adds dynamic capacity to the consumer VM.
+If the orchestrator accepts the request, it signals the consumer hypervisor to add dynamic capacity to the consumer VM.
 When it does so, it will ensure that the memory has been zeroed so as not to leak donor VM data to the consumer.
 
 When a donor hypervisor detects a donor VM is low on memory, it will send a revocation request to the orchestrator to reclaim its memory.
-In response to the revocation request, the orchestrator will forcefully revoke some dynamic capacity from one or more consumer VMs.
+In response to the revocation request, the orchestrator will order one or more consumer hypervisors to forcefully revoke some dynamic capacity from their corresponding consumer VMs.
 Similarly, if the orchestrator sees that a newly arriving permanent VM needs some unallocated memory that was given as ephemeral memory, that memory will be revoked as well.
 
 Revocation takes the following steps:
-1. The orchestrator forcefully revokes ephemeral memory from the consumer
-2. The orchestrator informs the donor hypervisor that it has access to more memory
+1. The orchestrator orders a consumer hypervisor to forcefully revoke ephemeral memory from the consumer VM.
+2. The orchestrator informs the donor hypervisor that it has access to more memory.
 3. On a donor hypervisor page fault, former consumer pages will be zeroed.
 
 To minimize communication overheads and to help ensure donors have enough of a buffer before the next revocation, capacity additions and revocations will happen at a granularity of 256MB.
