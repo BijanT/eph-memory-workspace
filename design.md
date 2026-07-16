@@ -135,6 +135,17 @@ Application writers should take care to ensure code inside attempt contexts does
 Similarly, code inside attempt contexts should not throw exceptions that leave the attempt context or exit out of the attempt context in any way other than having `fn` return (such as a call to `longjmp`), as that will skip the cleanup of the attempt context.
 On failure, data written to by `fn`, such as return values in `arg` may be in an inconsistent state and should not be consumed by the callers.
 
+`libephmem` further guards against accesses to ephemeral memory outside of the attempt context by using memory protection keys if available [10].
+When `libephmem` memory maps ephemeral memory, it assigns the mapped memory region to a protection key that is disabled by default.
+Access to memory regions covered by the protection key is enabled when entering an attempt context and disabled again when leaving it.
+Memory protection keys work on a per-thread basis, so entering the attempt context on one thread does not enable access to ephemeral memory on another thread.
+If a thread somehow accesses ephemeral memory outside of the attempt context, the memory protection would result in a `SIGSEGV` being sent to the process.
+Additionally, the protection is controlled by writing to a CPU register, so it is low overhead.
+Because a process can only have up to 16 memory protection keys on x86, it would be infeasible to have a key for each ephemeral memory allocation.
+Therefore, `libephmem` uses a single protection key for all ephemeral memory.
+The downside to this is if a thread enters the attempt context for one ephemeral memory handle, it has access to all ephemeral memory, even the memory not belonging to the handle.
+Additionally, if running on a CPU that does not support memory protection keys, `libephmem` will fall back to always allowing access to ephemeral memory.
+
 The default location `libephmem` will attempt to allocate `ephmfs` files from is `/mnt/ephmfs`.
 Users can override this by setting the `EPHMFS_DIR` environment variable.
 All `ephmfs` files created by `libephmem` are created with the `O_TMPFILE` flag, so they are automatically deleted if the process ends unexpectedly.
@@ -234,3 +245,4 @@ When a consumer requests ephemeral memory, its local orchestrator will attempt t
 [7] https://dl.acm.org/doi/abs/10.1145/3447786.3456256 <br>
 [8] https://dl.acm.org/doi/abs/10.1145/356989.357000 <br>
 [9] https://people.freebsd.org/~jasone/jemalloc/bsdcan2006/jemalloc.pdf <br>
+[10] https://man7.org/linux/man-pages/man7/pkeys.7.html <br>
