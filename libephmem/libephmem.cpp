@@ -16,6 +16,7 @@
 static std::once_flag libephmem_initialized;
 static const char *EPHMFS_DIR_ENV_VAR = "EPHMFS_DIR";
 static std::string libephmfs_ephmfs_dir = "/mnt/ephmfs";
+static int ephmem_pkey = -1;
 
 struct libephmem_file {
 	int fd;
@@ -35,6 +36,10 @@ struct libephmem_attempt_context {
 	volatile sig_atomic_t in_attempt;
 };
 static thread_local struct libephmem_attempt_context cur_attempt_context;
+
+static bool libephmem_using_pkey() {
+	return ephmem_pkey != -1;
+}
 
 static bool addr_in_range(void *addr, struct libephmem_handle *handle) {
 	uintptr_t addr_int = reinterpret_cast<uintptr_t>(addr);
@@ -72,6 +77,19 @@ static void libephmem_init() {
 	if (sigaction(SIGBUS, &sa, nullptr) == -1) {
 		perror("Failed to install signal handler");
 	}
+
+	/*
+	 * Failure means either the CPU does not support protection keys or for
+	 * some other reason, this process has run out. I don't think that's
+	 * reason enough to fail, but we should at least print something to let
+	 * the user know.
+	 */
+	ephmem_pkey = pkey_alloc(0, PKEY_DISABLE_ACCESS);
+	if (ephmem_pkey == -1) {
+		perror("Failed to allocate protection key for ephemeral memory");
+		fprintf(stderr, "Proceeding without protection keys. Ephemeral memory"
+			" will be accessible outside of attempt contexts.\n");
+	}
 }
 
 size_t libephmem_size(struct libephmem_handle *handle) {
@@ -100,6 +118,17 @@ static std::unique_ptr<struct libephmem_file> libephmem_create_file(size_t size)
 		perror("mmap failed");
 		close(fd);
 		return nullptr;
+	}
+
+	if (libephmem_using_pkey()) {
+		int ret = pkey_mprotect(file->ptr, size, PROT_READ | PROT_WRITE,
+			ephmem_pkey);
+		if (ret == -1) {
+			perror("pkey_mprotect failed");
+			munmap(file->ptr, size);
+			close(fd);
+			return nullptr;
+		}
 	}
 
 	file->fd = fd;
@@ -143,6 +172,8 @@ void libephmem_free(struct libephmem_handle *handle) {
 
 int libephmem_attempt(struct libephmem_handle *handle, libephmem_attempt_fn fn,
 		      void *args) {
+	bool using_pkeys;
+
 	if (handle == nullptr || fn == nullptr) {
 		fprintf(stderr, "libephmem_attempt: NULL handle or function pointer\n");
 		return -1;
@@ -152,17 +183,38 @@ int libephmem_attempt(struct libephmem_handle *handle, libephmem_attempt_fn fn,
 		return -1;
 	}
 
+	using_pkeys = libephmem_using_pkey();
+	if (using_pkeys) {
+		if (pkey_set(ephmem_pkey, 0) == -1) {
+			perror("Failed to enable access to ephemeral memory");
+			return -1;
+		}
+	}
+
 	if (!sigsetjmp(cur_attempt_context.env, 1)) {
 		cur_attempt_context.handle = handle;
 		cur_attempt_context.in_attempt = 1;
+
 		fn(handle->ptr, handle->size, args);
 
 		cur_attempt_context.in_attempt = 0;
+		if (using_pkeys) {
+			if (pkey_set(ephmem_pkey, PKEY_DISABLE_ACCESS) == -1) {
+				perror("Failed to disable access to ephemeral memory");
+				return -1;
+			}
+		}
 		return 0;
 	}
 
 	/* The attempt failed */
 	cur_attempt_context.in_attempt = 0;
+	if (using_pkeys) {
+		if (pkey_set(ephmem_pkey, PKEY_DISABLE_ACCESS) == -1) {
+			perror("Failed to disable access to ephemeral memory");
+			return -1;
+		}
+	}
 	return 1;
 }
 
