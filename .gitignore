@@ -5,6 +5,7 @@
 *.swp
 *.swo
 
+.claude/
 .vscode/
 
 *.qcow2
