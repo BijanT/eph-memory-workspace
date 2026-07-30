@@ -87,6 +87,8 @@ where
 }
 
 fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
+    let user_home = get_user_home_dir(ushell)?;
+    let qemu_dir = dir!(&user_home, crate::QEMU_DIR);
     ushell.run(cmd!("sudo apt update; sudo apt upgrade -y"))?;
 
     let apt_packages = [
@@ -144,10 +146,10 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
 
     // Build DCD compatible version of QEMU
     let qemu_repo = GitRepo::HttpsPublic {
-        repo: "github.com/qemu/qemu.git",
+        repo: "github.com/BijanT/dcd_qemu.git",
     };
-    clone_git_repo(ushell, qemu_repo, None, Some("v11.0.0"), &[])?;
-    ushell.run(cmd!("mkdir -p build").cwd("qemu"))?;
+    clone_git_repo(ushell, qemu_repo, Some(&qemu_dir), Some("main"), &[])?;
+    ushell.run(cmd!("mkdir -p build").cwd(&qemu_dir))?;
     ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd("qemu/build"))?;
     ushell.run(cmd!("make -j$(nproc)").cwd("qemu/build"))?;
 
