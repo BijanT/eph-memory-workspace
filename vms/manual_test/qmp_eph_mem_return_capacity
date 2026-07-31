@@ -1,0 +1,8 @@
+{ "execute": "qmp_capabilities" }
+{
+  "execute": "eph-mem-return-capacity",
+  "arguments": {
+    "path": "/objects/m0",
+    "size": 268435456
+  }
+}

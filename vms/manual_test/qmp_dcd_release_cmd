@@ -1,0 +1,16 @@
+{ "execute": "qmp_capabilities" }
+{
+  "execute": "cxl-release-dynamic-capacity",
+  "arguments": {
+    "host-id": 0,
+    "removal-policy": "prescriptive",
+    "path": "/machine/peripheral/cxl-mem0",
+    "region": 0,
+    "extents": [
+      {
+        "offset": 0,
+        "len": 1073741824
+      }
+    ]
+  }
+}
