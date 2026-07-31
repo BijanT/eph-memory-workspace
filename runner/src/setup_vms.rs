@@ -135,6 +135,8 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "guestmount",
         "ninja-build",
         "libglib2.0-dev",
+        "libslirp-dev",
+        "socat",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
 
