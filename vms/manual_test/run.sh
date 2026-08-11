@@ -16,7 +16,7 @@ fi
 $HOME/qemu/build/qemu-system-x86_64 \
 -m 4G,slots=4,maxmem=8G \
 -smp 1,sockets=1,cores=1,threads=1 \
--object memory-backend-ram,size=4G,id=m0,reserve=off,donatable=on \
+-object memory-backend-memfd,size=4G,id=m0,reserve=off,share=off,hugetlb=on,hugetlbsize=2M,donatable=on \
 -numa node,cpus=0,memdev=m0,nodeid=0 \
 -machine type=q35,cxl=on,hmat=on \
 -cpu host,mce=on,lmce=on \
