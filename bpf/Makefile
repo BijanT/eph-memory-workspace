@@ -8,6 +8,7 @@ BPFTOOL_DIR := $(abspath ../bpftool/)
 BPFTOOL := $(BPFTOOL_DIR)/src/bpftool
 INCLUDES := -I$(LIBBPF_INC) -I$(BUILD)
 APPS := pf_trace kvm_pf_trace
+.SECONDEXPANSION:
 
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 	| sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
@@ -18,10 +19,10 @@ all: $(APPS)
 $(APPS): %: $(BUILD)/%.o $(BUILD)/%.bpf.o $(LIBBPF_OBJ)
 	gcc -g -Wall $< $(LIBBPF_OBJ) -lelf -lz -o $@
 
-$(BUILD)/%.o: %.c $(wildcard %.h) $(BUILD)/%.skel.h | $(BUILD)
+$(BUILD)/%.o: %.c $$(wildcard %.h) $(BUILD)/%.skel.h | $(BUILD)
 	gcc -g -Wall $(INCLUDES) -c $< -o $@
 
-$(BUILD)/%.bpf.o: %.bpf.c $(wildcard %.h) $(BUILD)/vmlinux.h $(LIBBPF_OBJ) | $(BUILD)
+$(BUILD)/%.bpf.o: %.bpf.c $$(wildcard %.h) $(BUILD)/vmlinux.h $(LIBBPF_OBJ) | $(BUILD)
 	$(eval TMP_FILE = $(patsubst %.bpf.o, %.tmp.bpf.o, $@))
 	$(CLANG) -O2 -g -Wall -target bpf -D__TARGET_ARCH_x86 \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
