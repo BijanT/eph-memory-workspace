@@ -6,8 +6,8 @@ LIBBPF_SRC := $(LIBBPF_DIR)/src
 LIBBPF_INC := $(LIBBPF_DIR)/include/uapi
 BPFTOOL_DIR := $(abspath ../bpftool/)
 BPFTOOL := $(BPFTOOL_DIR)/src/bpftool
-INCLUDES := -I$(LIBBPF_INC) -I$(BUILD)
-APPS := pf_trace kvm_pf_trace
+INCLUDES := -I$(LIBBPF_INC) -isystem $(BUILD)
+APPS := pf_trace kvm_pf_trace bpf_fault_test
 .SECONDEXPANSION:
 
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
@@ -24,7 +24,7 @@ $(BUILD)/%.o: %.c $$(wildcard %.h) $(BUILD)/%.skel.h | $(BUILD)
 
 $(BUILD)/%.bpf.o: %.bpf.c $$(wildcard %.h) $(BUILD)/vmlinux.h $(LIBBPF_OBJ) | $(BUILD)
 	$(eval TMP_FILE = $(patsubst %.bpf.o, %.tmp.bpf.o, $@))
-	$(CLANG) -O2 -g -Wall -target bpf -D__TARGET_ARCH_x86 \
+	$(CLANG) -O2 -g -Wall -target bpf -mcpu=v3 -D__TARGET_ARCH_x86 \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $(TMP_FILE)
 	$(BPFTOOL) gen object $@ $(TMP_FILE)
