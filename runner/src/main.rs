@@ -12,6 +12,7 @@ const WKSPC_DIR: &str = "research-workspace";
 const IMGS_DIR: &str = "imgs";
 const DOMAINS_DIR: &str = "domains";
 const GUEST_KERNEL_DIR: &str = "guest-kernel";
+const HOST_KERNEL_DIR: &str = "host-kernel";
 const QEMU_DIR: &str = "qemu";
 
 const VM_USERNAME: &str = "ubuntu";

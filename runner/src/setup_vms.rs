@@ -8,6 +8,8 @@ use libscail::{
 };
 use spurs::{Execute, SshShell, cmd};
 
+use crate::HOST_KERNEL_DIR;
+
 pub fn cli_options() -> clap::Command {
     clap::Command::new("setup_vms")
     	.about("Setup VMs on fresh CloudLab machines")
@@ -19,6 +21,7 @@ pub fn cli_options() -> clap::Command {
 	.arg(arg!(--secret <secret> "Git personal access token or password for cloning private repos"))
 	.arg(arg!(--wkspc_branch <wkspc_branch> "(Optional) If passed, clone the specific workspace branch"))
 	.arg(arg!(--guest_kernel_branch <guest_kernel_branch> "(Optional) If passed, clone and build the specific guest kernel branch"))
+	.arg(arg!(--host_kernel_branch <host_kernel_branch> "(Optional) If passed, clone and build the specific host kernel branch"))
 	.arg(arg!(--skip_spark_build "Skip building Spark on the host"))
 	.arg(arg!(--resize_root "(Option) Resize root partition to fill disk")
 		.action(ArgAction::SetTrue))
@@ -29,6 +32,7 @@ struct Config<'a> {
     secret: Option<&'a str>,
     wkspc_branch: Option<&'a str>,
     guest_kernel_branch: Option<&'a str>,
+    host_kernel_branch: Option<&'a str>,
     skip_spark_build: bool,
     resize_root: bool,
 }
@@ -49,6 +53,9 @@ pub fn run(sub_m: &ArgMatches) -> Result<(), ScailError> {
         guest_kernel_branch: sub_m
             .get_one::<String>("guest_kernel_branch")
             .map(|s| s.as_str()),
+        host_kernel_branch: sub_m
+            .get_one::<String>("host_kernel_branch")
+            .map(|s| s.as_str()),
         skip_spark_build: sub_m.get_flag("skip_spark_build"),
         resize_root: sub_m.get_flag("resize_root"),
     };
@@ -66,17 +73,12 @@ where
         libscail::resize_root_partition(&host_shell)?;
     }
 
-    install_host_dependencies(&host_shell)?;
+    // The host will be rebooted here, so the group changes will be applied.
+    let host_shell = install_host_dependencies(&host_shell, login, cfg)?;
     clone_research_workspace(&host_shell, cfg)?;
     if !cfg.skip_spark_build {
         build_spark_on_host(&host_shell)?;
     }
-
-    // The user needs to be in the KVM and libvirt groups to run VMs.
-    host_shell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
-    host_shell.run(cmd!("sudo usermod -aG libvirt {}", login.username))?;
-    // Reconnect to apply group changes and uninstalled AppArmor.
-    let host_shell = crate::reboot_and_connect(login)?;
 
     setup_guest_vms(&host_shell, &login.host, cfg)?;
 
@@ -86,9 +88,20 @@ where
     Ok(())
 }
 
-fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
+// Reboots the remote after installing the new kernel, so it must return a new
+// SshShell after the reboot.
+fn install_host_dependencies<A>(
+    ushell: &SshShell,
+    login: &Login<A>,
+    cfg: &Config)
+-> Result<SshShell, ScailError>
+where
+    A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
+{
     let user_home = get_user_home_dir(ushell)?;
+    let host_kernel_dir = dir!(&user_home, HOST_KERNEL_DIR);
     let qemu_dir = dir!(&user_home, crate::QEMU_DIR);
+    let qemu_build_dir = dir!(&qemu_dir, "build");
     ushell.run(cmd!("sudo apt update; sudo apt upgrade -y"))?;
 
     let apt_packages = [
@@ -137,8 +150,18 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
         "libglib2.0-dev",
         "libslirp-dev",
         "socat",
+        "debhelper",
+        "bc",
+        "libtracefs-dev",
     ];
     ushell.run(cmd!("sudo apt install -y {}", apt_packages.join(" ")))?;
+
+    // The user needs to be in the KVM and libvirt groups to run VMs.
+    ushell.run(cmd!("sudo usermod -aG kvm {}", login.username))?;
+    ushell.run(cmd!("sudo usermod -aG libvirt {}", login.username))?;
+
+    // AppArmor may interfere with some experiments, so uninstall it.
+    ushell.run(cmd!("sudo apt remove -y apparmor"))?;
 
     // Clone FlameGraph
     let flamegraph_repo = GitRepo::HttpsPublic {
@@ -146,21 +169,24 @@ fn install_host_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     };
     clone_git_repo(ushell, flamegraph_repo, None, None, &[])?;
 
+    libscail::install_rust(ushell)?;
+
+    // Build and install the host kernel.
+    // We need to do this before building QEMU because our version of QEMU
+    // needs the kernel headers that include stuff for BPF fault
+    build_and_install_host_kernel(ushell, &host_kernel_dir, cfg)?;
+    let new_ushell = crate::reboot_and_connect(login)?;
+
     // Build DCD compatible version of QEMU
     let qemu_repo = GitRepo::HttpsPublic {
         repo: "github.com/BijanT/dcd_qemu.git",
     };
-    clone_git_repo(ushell, qemu_repo, Some(&qemu_dir), Some("main"), &[])?;
-    ushell.run(cmd!("mkdir -p build").cwd(&qemu_dir))?;
-    ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd("qemu/build"))?;
-    ushell.run(cmd!("make -j$(nproc)").cwd("qemu/build"))?;
+    clone_git_repo(&new_ushell, qemu_repo, Some(&qemu_dir), Some("main"), &[])?;
+    new_ushell.run(cmd!("mkdir -p build").cwd(&qemu_dir))?;
+    new_ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd(&qemu_build_dir))?;
+    new_ushell.run(cmd!("make -j$(nproc)").cwd(&qemu_build_dir))?;
 
-    // AppArmor may interfere with some experiments, so uninstall it.
-    ushell.run(cmd!("sudo apt remove -y apparmor"))?;
-
-    libscail::install_rust(ushell)?;
-
-    Ok(())
+    Ok(new_ushell)
 }
 
 fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
@@ -577,6 +603,104 @@ fn build_guest_kernel(
     ushell.run(cmd!("make").cwd(&perf_path))?;
 
     Ok(kernel_artifacts.pkg_path)
+}
+
+fn build_and_install_host_kernel(
+    ushell: &SshShell,
+    host_kernel_dir: &str,
+    cfg: &Config)
+-> Result<(), ScailError> {
+    let user = cfg.git_user.unwrap();
+    let secret = cfg.secret.unwrap();
+    let branch = cfg.host_kernel_branch.unwrap_or("main");
+
+    let host_kernel_repo = GitRepo::HttpsPrivate {
+        repo: "github.com/BijanT/linux_eph_memory.git",
+        username: user,
+        secret,
+    };
+
+    clone_git_repo(
+        ushell,
+        host_kernel_repo,
+        Some(host_kernel_dir),
+        Some(branch),
+        &[],
+    )?;
+
+    let kernel_src = KernelSrc::Git {
+        repo_path: host_kernel_dir.to_string(),
+        commitish: branch.into(),
+    };
+    let config_options = [
+        ("CONFIG_TMPFS", true),
+        ("CONFIG_HUGETLBFS", true),
+        ("CONFIG_TRANSPARENT_HUGEPAGE", true),
+        ("CONFIG_ISO9660_FS", true),
+        ("CONFIG_EXT4_FS", true),
+        ("CONFIG_VIRTIO", true),
+        ("CONFIG_VIRTIO_PCI", true),
+        ("CONFIG_VIRTIO_BALLOON", true),
+        ("CONFIG_VIRTIO_NET", true),
+        ("CONFIG_VIRTIO_BLK", true),
+        ("CONFIG_FUSE_FS", true),
+        ("CONFIG_VIRTIO_FS", true),
+        ("CONFIG_MEMORY_HOTPLUG", true),
+        ("CONFIG_MEMORY_HOTREMOVE", true),
+        ("CONFIG_ACPI_HOTPLUG_MEMORY", true),
+        ("CONFIG_MHP_DEFAULT_ONLINE_TYPE_ONLINE_MOVABLE", true),
+        ("CONFIG_CXL_BUS", true),
+        ("CONFIG_CXL_PCI", true),
+        ("CONFIG_CXL_MEM", true),
+        ("CONFIG_CXL_ACPI", true),
+        ("CONFIG_CXL_FEATURES", true),
+        ("CONFIG_BPF", true),
+        ("CONFIG_BPF_JIT", true),
+        ("CONFIG_BPF_SYSCALL", true),
+        ("CONFIG_BPF_FAULT", true),
+        ("CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT", true),
+        ("CONFIG_DEBUG_INFO_BTF", true),
+        ("CONFIG_CXL_REGION_INVALIDATION_TEST", true),
+        ("CONFIG_DAX", true),
+        ("CONFIG_DEV_DAX", true),
+        ("CONFIG_DEV_DAX_CXL", true),
+        ("CONFIG_ZONE_DEVICE", true),
+        ("CONFIG_FS_DAX", true),
+        ("CONFIG_USERFAULTFD", true),
+        ("CONFIG_PTE_MARKER_UFFD_WP", true),
+    ];
+    let kernel_config = KernelConfig {
+        base_config: KernelBaseConfigSource::Current,
+        extra_options: &config_options,
+    };
+
+    let git_hash = libscail::get_git_hash(ushell, host_kernel_dir)?;
+    let local_version = libscail::gen_local_version(branch, &git_hash);
+
+    let kernel_artifacts = libscail::build_kernel(
+        ushell,
+        kernel_src,
+        kernel_config,
+        Some(&local_version),
+        libscail::KernelPkgType::Deb,
+        None,
+        false,
+    )?;
+
+    ushell.run(cmd!(
+        "sudo dpkg -i {} {} {}",
+        kernel_artifacts.pkg_path,
+        kernel_artifacts.kernel_headers_pkg_path,
+        kernel_artifacts.user_headers_pkg_path,
+    ))?;
+    ushell.run(cmd!("sudo grub-set-default 0"))?;
+
+    // Build and install perf tool
+    let perf_path = dir!(host_kernel_dir, "tools", "perf");
+    ushell.run(cmd!("make -j$(nproc)").cwd(&perf_path))?;
+    ushell.run(cmd!("sudo cp {}/perf /usr/local/bin/perf", perf_path))?;
+
+    Ok(())
 }
 
 fn build_spark_on_host(shell: &SshShell) -> Result<(), ScailError> {
