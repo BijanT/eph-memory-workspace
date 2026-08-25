@@ -73,9 +73,13 @@ where
         libscail::resize_root_partition(&host_shell)?;
     }
 
-    // The host will be rebooted here, so the group changes will be applied.
-    let host_shell = install_host_dependencies(&host_shell, login, cfg)?;
+    install_host_dependencies(&host_shell, login, cfg)?;
+
+    // The host will be rebooted here, so the group changes will be applied
+    // and the new kernel in use.
+    let host_shell = crate::reboot_and_connect(login)?;
     clone_research_workspace(&host_shell, cfg)?;
+    build_qemu(&host_shell)?;
     if !cfg.skip_spark_build {
         build_spark_on_host(&host_shell)?;
     }
@@ -88,20 +92,17 @@ where
     Ok(())
 }
 
-// Reboots the remote after installing the new kernel, so it must return a new
-// SshShell after the reboot.
 fn install_host_dependencies<A>(
     ushell: &SshShell,
     login: &Login<A>,
     cfg: &Config)
--> Result<SshShell, ScailError>
+-> Result<(), ScailError>
 where
-    A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
+    A: std::net::ToSocketAddrs + std::fmt::Display + Clone,
 {
     let user_home = get_user_home_dir(ushell)?;
     let host_kernel_dir = dir!(&user_home, HOST_KERNEL_DIR);
-    let qemu_dir = dir!(&user_home, crate::QEMU_DIR);
-    let qemu_build_dir = dir!(&qemu_dir, "build");
+
     ushell.run(cmd!("sudo apt update; sudo apt upgrade -y"))?;
 
     let apt_packages = [
@@ -175,18 +176,24 @@ where
     // We need to do this before building QEMU because our version of QEMU
     // needs the kernel headers that include stuff for BPF fault
     build_and_install_host_kernel(ushell, &host_kernel_dir, cfg)?;
-    let new_ushell = crate::reboot_and_connect(login)?;
 
-    // Build DCD compatible version of QEMU
+    Ok(())
+}
+
+fn build_qemu(ushell: &SshShell) -> Result<(), ScailError> {
+    let user_home = get_user_home_dir(ushell)?;
+    let qemu_dir = dir!(&user_home, crate::QEMU_DIR);
+    let qemu_build_dir = dir!(&qemu_dir, "build");
+
     let qemu_repo = GitRepo::HttpsPublic {
         repo: "github.com/BijanT/dcd_qemu.git",
     };
-    clone_git_repo(&new_ushell, qemu_repo, Some(&qemu_dir), Some("main"), &[])?;
-    new_ushell.run(cmd!("mkdir -p build").cwd(&qemu_dir))?;
-    new_ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd(&qemu_build_dir))?;
-    new_ushell.run(cmd!("make -j$(nproc)").cwd(&qemu_build_dir))?;
+    clone_git_repo(ushell, qemu_repo, Some(&qemu_dir), Some("main"), &[])?;
+    ushell.run(cmd!("mkdir -p build").cwd(&qemu_dir))?;
+    ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd(&qemu_build_dir))?;
+    ushell.run(cmd!("make -j$(nproc)").cwd(&qemu_build_dir))?;
 
-    Ok(new_ushell)
+    Ok(())
 }
 
 fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
