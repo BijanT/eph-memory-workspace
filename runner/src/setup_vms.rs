@@ -298,7 +298,15 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
     clone_git_repo(ushell, wkspc_repo, Some(&wkspc_dir), branch, SUBMODULES)?;
 
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "ubmks")))?;
-    ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpftool", "src")))?;
+    ushell.run(
+        cmd!("make && sudo make install")
+            .cwd(dir!(&wkspc_dir, "bpftool", "src"))
+    )?;
+    ushell.run(
+        cmd!("make && sudo make install LIBDIR=/usr/lib/$(gcc -dumpmachine)")
+            .cwd(dir!(&wkspc_dir, "libbpf", "src"))
+    )?;
+    ushell.run(cmd!("sudo ldconfig"))?;
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpf")))?;
 
     Ok(())
