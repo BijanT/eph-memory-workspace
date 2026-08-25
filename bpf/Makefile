@@ -7,7 +7,15 @@ LIBBPF_INC := $(LIBBPF_DIR)/include/uapi
 BPFTOOL_DIR := $(abspath ../bpftool/)
 BPFTOOL := $(BPFTOOL_DIR)/src/bpftool
 INCLUDES := -I$(LIBBPF_INC) -isystem $(BUILD)
-APPS := pf_trace kvm_pf_trace bpf_fault_test
+# bpf_fault_test depends on `struct bpf_fault_ops_ctx`, which only exists if
+# the running kernel has CONFIG_BPF_FAULT. Probe the BTF string table to see
+# if it should be built.
+APPS := pf_trace kvm_pf_trace
+ifeq ($(shell grep -qa bpf_fault_ops_ctx /sys/kernel/btf/vmlinux 2>/dev/null && echo yes),yes)
+APPS += bpf_fault_test
+else
+$(info CONFIG_BPF_FAULT is not enabled. Skipping bpf_fault_test build.)
+endif
 .SECONDEXPANSION:
 
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
