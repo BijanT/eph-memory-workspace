@@ -12,7 +12,7 @@ INCLUDES := -I$(LIBBPF_INC) -isystem $(BUILD)
 # if it should be built.
 APPS := pf_trace kvm_pf_trace
 ifeq ($(shell grep -qa bpf_fault_ops_ctx /sys/kernel/btf/vmlinux 2>/dev/null && echo yes),yes)
-APPS += bpf_fault_test
+APPS += bpf_fault_test bpf_fault_wait_test
 else
 $(info CONFIG_BPF_FAULT is not enabled. Skipping bpf_fault_test build.)
 endif
@@ -25,7 +25,7 @@ all: $(APPS)
 	@echo "Build complete."
 
 $(APPS): %: $(BUILD)/%.o $(BUILD)/%.bpf.o $(LIBBPF_OBJ)
-	gcc -g -Wall $< $(LIBBPF_OBJ) -lelf -lz -o $@
+	gcc -g -Wall $< $(LIBBPF_OBJ) -lelf -lz -lpthread -o $@
 
 $(BUILD)/%.o: %.c $$(wildcard %.h) $(BUILD)/%.skel.h | $(BUILD)
 	gcc -g -Wall $(INCLUDES) -c $< -o $@

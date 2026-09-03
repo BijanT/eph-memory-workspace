@@ -2,3 +2,4 @@ build/
 pf_trace
 kvm_pf_trace
 bpf_fault_test
+bpf_fault_wait_test
