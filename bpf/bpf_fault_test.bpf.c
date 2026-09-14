@@ -13,14 +13,15 @@ __u32 fault_count = 0;
 
 SEC("struct_ops/handle_page_fault")
 int BPF_PROG(handle_page_fault, struct bpf_fault_ops_ctx *fctx,
-    unsigned char *buf)
+    struct bpf_dynptr *buf)
 {
     __u32 count = __sync_fetch_and_add(&fault_count, 1);
     u64 *event_addr;
+    unsigned char val = count & 0xFF;
 
-    buf[0] = (char)(count & 0xFF);
+    bpf_dynptr_write(buf, 0, &val, sizeof(val), 0);
     bpf_printk("Page fault #%u at address: 0x%llx, first byte: 0x%x\n",
-        count, fctx->address, buf[0]);
+        count, fctx->address, val);
 
     event_addr = bpf_ringbuf_reserve(&fault_rb, sizeof(*event_addr), 0);
     if (!event_addr) {

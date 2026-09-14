@@ -24,7 +24,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 int main(int argc, char **argv)
 {
-    const int NUM_PAGES = 32;
+    const int NUM_PAGES = 512;
     void *ptr;
     struct ring_buffer *rb = NULL;
     struct bpf_link *link = NULL;

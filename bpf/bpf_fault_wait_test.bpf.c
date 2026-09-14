@@ -8,15 +8,16 @@ __u32 fault_count = 0;
 
 SEC("struct_ops/handle_page_fault")
 int BPF_PROG(handle_page_fault, struct bpf_fault_ops_ctx *fctx,
-    	     unsigned char *buf)
+             struct bpf_dynptr *buf)
 {
     __u32 count = __sync_fetch_and_add(&fault_count, 1);
+    unsigned char val = count & 0xFF;
 
     /* Wait for every other fault, forcing userspace to handle it */
     if (count % 2 == 0)
         return BPF_FAULT_RET_WAIT;
 
-    buf[0] = (char)(count & 0xFF);
+    bpf_dynptr_write(buf, 0, &val, sizeof(val), 0);
     return BPF_FAULT_RET_SUCCESS;
 }
 

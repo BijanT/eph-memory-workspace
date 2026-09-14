@@ -50,7 +50,7 @@ static void *bpf_fault_wait_thread(void *arg)
 
 int main(int argc, char **argv)
 {
-    const int NUM_PAGES = 32;
+    const int NUM_PAGES = 512;
     void *ptr = NULL;
     struct bpf_link *link = NULL;
     struct bpf_fault_wait_test_bpf *skel;
