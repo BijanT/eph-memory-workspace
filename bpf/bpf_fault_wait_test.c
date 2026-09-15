@@ -55,8 +55,12 @@ int main(int argc, char **argv)
     struct bpf_link *link = NULL;
     struct bpf_fault_wait_test_bpf *skel;
     pthread_t wait_thread;
+    int mmap_flags = MAP_PRIVATE | MAP_ANONYMOUS;
     int err;
     int link_fd;
+
+    if (argc > 1)
+        mmap_flags |= MAP_HUGETLB;
 
     libbpf_set_print(libbpf_print_fn);
 
@@ -74,9 +78,9 @@ int main(int argc, char **argv)
 
     printf("Allocating and faulting memory...\n");
     ptr = mmap(NULL, NUM_PAGES * 4096, PROT_READ | PROT_WRITE,
-	MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	mmap_flags, -1, 0);
     if (ptr == MAP_FAILED) {
-        fprintf(stderr, "Failed to allocate memory\n");
+        perror("Failed to allocate memory");
         goto cleanup;
     }
 
