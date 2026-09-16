@@ -219,6 +219,34 @@ Overall, we suspect a larger revocation granularity will lead to fewer disruptio
 
 The orchestrator will be implemented in this repository.
 
+### Single Host Orchestrator Design
+
+This section explains the high level design of the orchestrator when ephemeral memory is being used only within a single host.
+
+The orchestrator communicates with the VMs on the system via QEMU's QMP interface [11].
+QEMU VMs that want to use ephemeral memory should create a Unix domain socket for QMP in /tmp/ephmem/.
+The orchestrator will read this directory on startup and use inotify [12] to be alerted of entering and exiting VMs.
+When a new VM is detected, the orchestrator determines what it is able to donate by issuing the `query-memdev` QMP command, which returns a list of memory devices on the VM, their sizes, and whether the memory on those devices is available to be donated.
+Any VM that has donatable memory is considered a potential donor VM.
+Additionally, consumer guest applications can communicate directly with the orchestrator via a vsock connection [13].
+
+A consumer VM will request ephemeral memory from the orchestrator by sending a message with the amount of memory requested to the orchestrator via the vsock connection.
+The orchestrator will consult its list of donatable memory regions, and send an `eph-mem-donate-capacity` QMP command to a donor VM that can potentially provide the needed memory.
+The donor will respond to the command with the amount of memory donated, which may be less than the requested amount, or even 0 if it cannot donate any memory.
+After receiving donated memory, the orchestrator will give that memory to the consumer VM via the `cxl-add-dynamic-capacity` QMP command and alert the consumer guest of the addition via the vsock interface.
+
+A donor VM may eventually need to reclaim the memory it has donated.
+In that case, it will issue the `EPH_MEM_REVOKE` QMP event.
+In response to this event, the orchestrator will check which consumers have memory belonging to the donor.
+It will then send the `cxl-release-dynamic-capacity` command with the `forced-removal` flag set to `true` to those consumers until at least the amount of memory requested in the `EPH_MEM_REVOKE` event has been returned.
+After that, the orchestrator will send the `eph-mem-return-capacity` command to the donor, informing it that the memory has been returned.
+Finally, the orchestrator will optionally inform the consumer guests that memory has been revoked via the vsock interface.
+This may allow the guest to avoid attempting to access ephemeral memory that is already gone.
+
+### Multi-Host Orchestrator Design
+
+TBD
+
 ## Setting
 
 We envision that ephemeral memory can be used at two levels: the host level and the pool level.
@@ -246,3 +274,6 @@ When a consumer requests ephemeral memory, its local orchestrator will attempt t
 [8] https://dl.acm.org/doi/abs/10.1145/356989.357000 <br>
 [9] https://people.freebsd.org/~jasone/jemalloc/bsdcan2006/jemalloc.pdf <br>
 [10] https://man7.org/linux/man-pages/man7/pkeys.7.html <br>
+[11] https://wiki.qemu.org/Documentation/QMP <br>
+[12] https://man7.org/linux/man-pages/man7/inotify.7.html <br>
+[13] https://man7.org/linux/man-pages/man7/vsock.7.html <br>
