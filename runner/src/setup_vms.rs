@@ -193,6 +193,9 @@ fn build_qemu(ushell: &SshShell) -> Result<(), ScailError> {
     ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd(&qemu_build_dir))?;
     ushell.run(cmd!("make -j$(nproc)").cwd(&qemu_build_dir))?;
 
+    // Give qemu the capability to use BPF without sude
+    ushell.run(cmd!("sudo setcap cap_bpf,cap_perfmon+ep {}/qemu-system-x86_64", qemu_build_dir))?;
+
     Ok(())
 }
 
