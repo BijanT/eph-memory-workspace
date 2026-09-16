@@ -5,3 +5,4 @@ multi_alloc
 mfs_single_touch
 libephmem_test
 libephmem_poc
+vsock_test
