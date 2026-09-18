@@ -96,7 +96,10 @@ fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
             Err(e) => {
                 let attempts_remaining = attempt + 1 < MAX_ATTEMPTS;
                 if attempts_remaining {
-                    eprintln!("Failed to connect to QMP socket {:?}, retrying: {}", path, e);
+                    eprintln!(
+                        "Failed to connect to QMP socket {:?}, retrying: {}",
+                        path, e
+                    );
                     std::thread::sleep(RETRY_DELAY);
                 }
                 last_err = Some(e);
@@ -106,9 +109,7 @@ fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
     Err(last_err.unwrap())
 }
 
-fn handle_new_file(
-    donors: &Mutex<Vec<crate::DonorVM>>, path: &Path
-) -> Result<(), std::io::Error> {
+fn handle_new_file(donors: &Mutex<Vec<crate::DonorVM>>, path: &Path) -> Result<(), std::io::Error> {
     // We only care about unix domain sockets
     let metadata = path.metadata()?;
     let file_type = metadata.file_type();

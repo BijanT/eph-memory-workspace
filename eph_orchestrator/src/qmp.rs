@@ -64,14 +64,16 @@ impl TryInto<crate::DonatableRegion> for Memdev {
 }
 
 fn read_qmp_response(
-    stream: &mut crate::LineStream<UnixStream>
-)
--> Result<serde_json::Value, std::io::Error> {
+    stream: &mut crate::LineStream<UnixStream>,
+) -> Result<serde_json::Value, std::io::Error> {
     loop {
         let response = stream.recv_line()?;
         let value: serde_json::Value = serde_json::from_str(&response)?;
         if let Some(error) = value.get("error") {
-            return Err(std::io::Error::other(format!("QMP command failed: {}", error)));
+            return Err(std::io::Error::other(format!(
+                "QMP command failed: {}",
+                error
+            )));
         }
         if value.get("return").is_some() {
             return Ok(value);
