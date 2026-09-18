@@ -7,6 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::vec::Vec;
 
+use crate::qmp;
 use notify::Watcher;
 
 /// The main function for the vm_detection thread.
@@ -128,7 +129,9 @@ fn handle_new_file(donors: &Mutex<Vec<crate::DonorVM>>, path: &Path) -> Result<(
     }
 
     let socket = connect_with_retry(path)?;
-    let mut connection = crate::LineStream::new(socket);
+    // TODO: Wire event_rx somewhere.
+    let (resp_rx, _event_rx) = qmp::start_qmp_read_thread(&socket, path)?;
+    let mut connection = qmp::QmpConnection::new(socket, resp_rx);
 
     // Initialize the QMP connection
     crate::qmp::initiate_connection(&mut connection)?;
@@ -145,10 +148,10 @@ fn handle_new_file(donors: &Mutex<Vec<crate::DonorVM>>, path: &Path) -> Result<(
 fn check_new_vm(
     donors: &Mutex<Vec<crate::DonorVM>>,
     path: &Path,
-    mut connection: crate::LineStream<UnixStream>,
+    mut connection: qmp::QmpConnection,
 ) -> Result<(), std::io::Error> {
     // Get the list of the VM's memory devices.
-    let donatable_regions = crate::qmp::get_memdevs(&mut connection)?
+    let donatable_regions = qmp::get_memdevs(&mut connection)?
         .into_iter()
         .filter_map(|m| m.try_into().ok())
         .collect::<Vec<crate::DonatableRegion>>();
@@ -157,7 +160,7 @@ fn check_new_vm(
     if !donatable_regions.is_empty() {
         let donor_vm = crate::DonorVM {
             qmp_socket_path: path.to_path_buf(),
-            stream: connection,
+            connection,
             donatable_regions,
         };
         donors.lock().unwrap().push(donor_vm);

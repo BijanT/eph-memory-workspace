@@ -1,8 +1,6 @@
 mod qmp;
 mod vm_detection;
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
@@ -16,7 +14,7 @@ struct DonorVM {
     /* The path to the QMP socket */
     qmp_socket_path: PathBuf,
     /* The Unix stream for communicating with the donor VM */
-    stream: LineStream<UnixStream>,
+    connection: crate::qmp::QmpConnection,
     /* The list of donatable regions available in the donor VM */
     donatable_regions: Vec<DonatableRegion>,
 }
@@ -29,32 +27,6 @@ struct DonatableRegion {
     donated: u64,
     /* The path to the QEMU memory backend device for this donatable region */
     path: String,
-}
-
-struct LineStream<T: Read + Write> {
-    reader: BufReader<T>,
-}
-
-impl<T: Read + Write> LineStream<T> {
-    pub fn new(stream: T) -> Self {
-        Self {
-            reader: BufReader::new(stream),
-        }
-    }
-
-    pub fn send(&mut self, message: &str) -> std::io::Result<()> {
-        self.reader.get_mut().write_all(message.as_bytes())?;
-        if !message.ends_with('\n') {
-            self.reader.get_mut().write_all(b"\n")?;
-        }
-        Ok(())
-    }
-
-    pub fn recv_line(&mut self) -> std::io::Result<String> {
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        Ok(line)
-    }
 }
 
 fn main() {
