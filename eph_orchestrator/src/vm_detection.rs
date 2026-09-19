@@ -4,7 +4,7 @@
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::vec::Vec;
 
 use crate::qmp;
@@ -24,7 +24,7 @@ use notify::Watcher;
 /// * `qmp_path` - The path to the directory to watch for QMP sockets.
 /// * `event_tx` - The channel to send QMP events to the event handling thread.
 pub fn vm_detection_thread(
-    donors: &Mutex<Vec<crate::DonorVM>>,
+    donors: &crate::DonorVMList,
     qmp_path: &str,
     event_tx: mpsc::Sender<qmp::events::QmpEvent>,
 ) -> Result<(), std::io::Error> {
@@ -75,7 +75,7 @@ pub fn vm_detection_thread(
                 }
             }
         } else if event.kind.is_remove() {
-            let mut donors = donors.lock().unwrap();
+            let mut donors = donors.write().unwrap();
             for path in event.paths {
                 // Remove the donor VM from the list of donors if it exists.
                 donors.retain(|donor| donor.qmp_socket_path != path);
@@ -113,7 +113,7 @@ fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
 }
 
 fn handle_new_file(
-    donors: &Mutex<Vec<crate::DonorVM>>,
+    donors: &crate::DonorVMList,
     path: &Path,
     event_tx: &mpsc::Sender<qmp::events::QmpEvent>,
 ) -> Result<(), std::io::Error> {
@@ -126,7 +126,7 @@ fn handle_new_file(
 
     // Already registered, e.g. seen by both the initial scan and a watch event.
     if donors
-        .lock()
+        .read()
         .unwrap()
         .iter()
         .any(|d| d.qmp_socket_path == path)
@@ -151,7 +151,7 @@ fn handle_new_file(
 // Transfer ownership of the connection to this function, so it can be given to
 // the DonorVM struct if the VM is eligible to be a donor.
 fn check_new_vm(
-    donors: &Mutex<Vec<crate::DonorVM>>,
+    donors: &crate::DonorVMList,
     path: &Path,
     mut connection: qmp::QmpConnection,
 ) -> Result<(), std::io::Error> {
@@ -163,12 +163,15 @@ fn check_new_vm(
 
     // If the VM has at least one donatable region, add it to the list of donors.
     if !donatable_regions.is_empty() {
-        let donor_vm = crate::DonorVM {
-            qmp_socket_path: path.to_path_buf(),
+        let donor_state = crate::DonorState {
             connection,
             donatable_regions,
         };
-        donors.lock().unwrap().push(donor_vm);
+        let donor_vm = crate::DonorVM {
+            qmp_socket_path: path.to_path_buf(),
+            state: Mutex::new(donor_state),
+        };
+        donors.write().unwrap().push(Arc::new(donor_vm));
     }
 
     Ok(())

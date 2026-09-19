@@ -2,7 +2,7 @@ mod qmp;
 mod vm_detection;
 
 use std::path::PathBuf;
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread;
 
 #[allow(dead_code)]
@@ -11,8 +11,14 @@ const QMP_DIRECTORY: &str = "/tmp/ephmem/";
 
 #[allow(dead_code)]
 struct DonorVM {
-    /* The path to the QMP socket */
+    /* The immutable path to the QMP socket */
     qmp_socket_path: PathBuf,
+    /* Mutable state for the donor VM protected by a mutex */
+    state: Mutex<DonorState>,
+}
+
+#[allow(dead_code)]
+struct DonorState {
     /* The Unix stream for communicating with the donor VM */
     connection: crate::qmp::QmpConnection,
     /* The list of donatable regions available in the donor VM */
@@ -29,10 +35,12 @@ struct DonatableRegion {
     path: String,
 }
 
+type DonorVMList = RwLock<Vec<Arc<DonorVM>>>;
+
 fn main() {
     println!("Starting eph_orchestrator...");
 
-    let donors = Mutex::new(Vec::new());
+    let donors = RwLock::new(Vec::new());
 
     thread::scope(|s| {
         // TODO: Wire event_rx somewhere.
