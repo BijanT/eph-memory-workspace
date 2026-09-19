@@ -125,7 +125,7 @@ fn qmp_read_thread(
                     }
                     let event = events::QmpEvent {
                         vm_path: vm_path.clone(),
-                        event: value,
+                        json: value,
                     };
                     if let Err(e) = event_tx.send(event) {
                         eprintln!("{}: Failed to send QMP event: {}", vm_path.display(), e);

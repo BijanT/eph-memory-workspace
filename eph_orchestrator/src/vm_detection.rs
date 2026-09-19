@@ -75,11 +75,7 @@ pub fn vm_detection_thread(
                 }
             }
         } else if event.kind.is_remove() {
-            let mut donors = donors.write().unwrap();
-            for path in event.paths {
-                // Remove the donor VM from the list of donors if it exists.
-                donors.retain(|donor| donor.qmp_socket_path != path);
-            }
+            crate::remove_donor_vms(donors, event.paths.as_slice());
         }
     }
 

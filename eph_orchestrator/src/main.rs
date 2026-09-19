@@ -37,17 +37,26 @@ struct DonatableRegion {
 
 type DonorVMList = RwLock<Vec<Arc<DonorVM>>>;
 
+fn remove_donor_vms(donors: &DonorVMList, paths: &[PathBuf]) {
+    let mut donors = donors.write().unwrap();
+    donors.retain(|donor| !paths.contains(&donor.qmp_socket_path));
+}
+
 fn main() {
     println!("Starting eph_orchestrator...");
 
     let donors = RwLock::new(Vec::new());
 
     thread::scope(|s| {
-        // TODO: Wire event_rx somewhere.
-        let (event_tx, _event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
         s.spawn(|| {
             if let Err(e) = vm_detection::vm_detection_thread(&donors, QMP_DIRECTORY, event_tx) {
                 eprintln!("Error in VM detection thread: {}", e);
+            }
+        });
+        s.spawn(|| {
+            if let Err(e) = qmp::events::qmp_event_handler_thread(&donors, event_rx) {
+                eprintln!("Error in QMP event handler thread: {}", e);
             }
         });
     });

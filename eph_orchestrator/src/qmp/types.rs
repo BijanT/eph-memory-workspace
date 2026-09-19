@@ -58,3 +58,30 @@ impl TryInto<crate::DonatableRegion> for Memdev {
         })
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct CxlDynamicCapacityExtent {
+    offset: u64,
+    len: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CxlAddReleaseCapacityEventData {
+    // Path to the DCD device triggering this event in the QOM
+    path: String,
+    // Extents added/removed from the DCD device
+    extents: Vec<CxlDynamicCapacityExtent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EphMemRevokeEventData {
+    // Path to the DCD device triggering this event in the QOM
+    path: String,
+    // The amount of memory requested to be revoked
+    size: u64,
+    // The ID to tie this event to returned memory. Not currently used.
+    id: i32,
+}
