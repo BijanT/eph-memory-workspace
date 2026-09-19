@@ -5,6 +5,7 @@ mod types;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use types::Memdev;
@@ -72,15 +73,15 @@ impl Drop for QmpConnection {
 /// connection.
 pub fn start_qmp_read_thread(
     qmp_stream: &UnixStream,
-    path: &std::path::Path,
+    path: &Path,
     event_tx: mpsc::Sender<events::QmpEvent>,
 ) -> Result<mpsc::Receiver<serde_json::Value>, std::io::Error> {
     let (response_tx, response_rx) = mpsc::channel();
     let thread_stream = qmp_stream.try_clone()?;
-    let path_string: String = path.to_string_lossy().into_owned();
+    let vm_path = path.to_path_buf();
 
     let _thread = thread::spawn(move || {
-        qmp_read_thread(thread_stream, response_tx, event_tx, path_string);
+        qmp_read_thread(thread_stream, response_tx, event_tx, vm_path);
     });
 
     Ok(response_rx)
@@ -90,7 +91,7 @@ fn qmp_read_thread(
     qmp_stream: UnixStream,
     response_tx: mpsc::Sender<serde_json::Value>,
     event_tx: mpsc::Sender<events::QmpEvent>,
-    path_string: String,
+    vm_path: PathBuf,
 ) {
     let mut buf = BufReader::new(qmp_stream);
     let mut response_tx_dead = false;
@@ -105,7 +106,7 @@ fn qmp_read_thread(
                 let value: serde_json::Value = match serde_json::from_str(&line) {
                     Ok(value) => value,
                     Err(e) => {
-                        eprintln!("{}: Failed to parse QMP response: {}", path_string, e);
+                        eprintln!("{}: Failed to parse QMP response: {}", vm_path.display(), e);
                         break;
                     }
                 };
@@ -115,7 +116,7 @@ fn qmp_read_thread(
                         continue;
                     }
                     if let Err(e) = response_tx.send(value) {
-                        eprintln!("{}: Failed to send QMP response: {}", path_string, e);
+                        eprintln!("{}: Failed to send QMP response: {}", vm_path.display(), e);
                         response_tx_dead = true;
                     }
                 } else if value.get("event").is_some() {
@@ -123,11 +124,11 @@ fn qmp_read_thread(
                         continue;
                     }
                     let event = events::QmpEvent {
-                        vm_path: path_string.clone(),
+                        vm_path: vm_path.clone(),
                         event: value,
                     };
                     if let Err(e) = event_tx.send(event) {
-                        eprintln!("{}: Failed to send QMP event: {}", path_string, e);
+                        eprintln!("{}: Failed to send QMP event: {}", vm_path.display(), e);
                         event_tx_dead = true;
                     }
                 } else if value.get("QMP").is_some() {
@@ -135,12 +136,17 @@ fn qmp_read_thread(
                 } else {
                     eprintln!(
                         "{}: Received unexpected QMP message: {:?}",
-                        path_string, value
+                        vm_path.display(),
+                        value
                     );
                 }
             }
             Err(e) => {
-                eprintln!("{}: Failed to read from QMP stream: {}", path_string, e);
+                eprintln!(
+                    "{}: Failed to read from QMP stream: {}",
+                    vm_path.display(),
+                    e
+                );
                 break;
             }
         }
@@ -150,7 +156,7 @@ fn qmp_read_thread(
             break;
         }
     }
-    eprintln!("{}: Exiting QMP read thread", path_string);
+    eprintln!("{}: Exiting QMP read thread", vm_path.display());
 }
 
 /// Initiates a QMP connection with the QEMU instance by sending the
