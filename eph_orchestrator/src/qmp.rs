@@ -1,5 +1,6 @@
 //! Helper functions for interacting with QEMU's QMP (QEMU Machine Protocol)
 //! interface.
+pub mod events;
 mod types;
 
 use std::io::{BufRead, BufReader, Write};
@@ -65,21 +66,16 @@ impl Drop for QmpConnection {
 }
 
 /// Takes a new QMP connection and spawns a thread to handle reading from it.
-/// Returns two channels: The first is for receiving responses to QMP commands
-/// using the connection, and the second is for receiving QMP events that are
-/// sent asynchronously by the QEMU instance.
+/// Also takes a mpsc channel for sending QMP events to the event handling
+/// thread.
+/// Returns a channel for receiving responses to QMP commands using the
+/// connection.
 pub fn start_qmp_read_thread(
     qmp_stream: &UnixStream,
     path: &std::path::Path,
-) -> Result<
-    (
-        mpsc::Receiver<serde_json::Value>,
-        mpsc::Receiver<serde_json::Value>,
-    ),
-    std::io::Error,
-> {
+    event_tx: mpsc::Sender<events::QmpEvent>,
+) -> Result<mpsc::Receiver<serde_json::Value>, std::io::Error> {
     let (response_tx, response_rx) = mpsc::channel();
-    let (event_tx, event_rx) = mpsc::channel();
     let thread_stream = qmp_stream.try_clone()?;
     let path_string: String = path.to_string_lossy().into_owned();
 
@@ -87,13 +83,13 @@ pub fn start_qmp_read_thread(
         qmp_read_thread(thread_stream, response_tx, event_tx, path_string);
     });
 
-    Ok((response_rx, event_rx))
+    Ok(response_rx)
 }
 
 fn qmp_read_thread(
     qmp_stream: UnixStream,
     response_tx: mpsc::Sender<serde_json::Value>,
-    event_tx: mpsc::Sender<serde_json::Value>,
+    event_tx: mpsc::Sender<events::QmpEvent>,
     path_string: String,
 ) {
     let mut buf = BufReader::new(qmp_stream);
@@ -115,16 +111,22 @@ fn qmp_read_thread(
                 };
 
                 if value.get("return").is_some() || value.get("error").is_some() {
-                    if let Err(e) = response_tx.send(value)
-                        && !response_tx_dead
-                    {
+                    if response_tx_dead {
+                        continue;
+                    }
+                    if let Err(e) = response_tx.send(value) {
                         eprintln!("{}: Failed to send QMP response: {}", path_string, e);
                         response_tx_dead = true;
                     }
                 } else if value.get("event").is_some() {
-                    if let Err(e) = event_tx.send(value)
-                        && !event_tx_dead
-                    {
+                    if event_tx_dead {
+                        continue;
+                    }
+                    let event = events::QmpEvent {
+                        vm_path: path_string.clone(),
+                        event: value,
+                    };
+                    if let Err(e) = event_tx.send(event) {
                         eprintln!("{}: Failed to send QMP event: {}", path_string, e);
                         event_tx_dead = true;
                     }

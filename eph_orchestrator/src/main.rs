@@ -2,7 +2,7 @@ mod qmp;
 mod vm_detection;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 
 #[allow(dead_code)]
@@ -35,8 +35,10 @@ fn main() {
     let donors = Mutex::new(Vec::new());
 
     thread::scope(|s| {
+        // TODO: Wire event_rx somewhere.
+        let (event_tx, _event_rx) = mpsc::channel();
         s.spawn(|| {
-            if let Err(e) = vm_detection::vm_detection_thread(&donors, QMP_DIRECTORY) {
+            if let Err(e) = vm_detection::vm_detection_thread(&donors, QMP_DIRECTORY, event_tx) {
                 eprintln!("Error in VM detection thread: {}", e);
             }
         });

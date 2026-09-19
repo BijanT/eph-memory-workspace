@@ -4,7 +4,7 @@
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
 use std::vec::Vec;
 
 use crate::qmp;
@@ -22,9 +22,11 @@ use notify::Watcher;
 ///
 /// * `donors` - The list of potential donor VMs that will be updated.
 /// * `qmp_path` - The path to the directory to watch for QMP sockets.
+/// * `event_tx` - The channel to send QMP events to the event handling thread.
 pub fn vm_detection_thread(
     donors: &Mutex<Vec<crate::DonorVM>>,
     qmp_path: &str,
+    event_tx: mpsc::Sender<qmp::events::QmpEvent>,
 ) -> Result<(), std::io::Error> {
     // Create the directory if it doesn't exist so we can monitor it
     std::fs::create_dir_all(qmp_path)?;
@@ -51,7 +53,7 @@ pub fn vm_detection_thread(
             }
         };
         let path = entry.path();
-        if let Err(e) = handle_new_file(donors, &path) {
+        if let Err(e) = handle_new_file(donors, &path, &event_tx) {
             eprintln!("Error handling {:?}: {}", path, e);
         }
     }
@@ -68,7 +70,7 @@ pub fn vm_detection_thread(
 
         if event.kind.is_create() {
             for path in event.paths {
-                if let Err(e) = handle_new_file(donors, &path) {
+                if let Err(e) = handle_new_file(donors, &path, &event_tx) {
                     eprintln!("Error handling {:?}: {}", path, e);
                 }
             }
@@ -110,7 +112,11 @@ fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
     Err(last_err.unwrap())
 }
 
-fn handle_new_file(donors: &Mutex<Vec<crate::DonorVM>>, path: &Path) -> Result<(), std::io::Error> {
+fn handle_new_file(
+    donors: &Mutex<Vec<crate::DonorVM>>,
+    path: &Path,
+    event_tx: &mpsc::Sender<qmp::events::QmpEvent>,
+) -> Result<(), std::io::Error> {
     // We only care about unix domain sockets
     let metadata = path.metadata()?;
     let file_type = metadata.file_type();
@@ -129,8 +135,7 @@ fn handle_new_file(donors: &Mutex<Vec<crate::DonorVM>>, path: &Path) -> Result<(
     }
 
     let socket = connect_with_retry(path)?;
-    // TODO: Wire event_rx somewhere.
-    let (resp_rx, _event_rx) = qmp::start_qmp_read_thread(&socket, path)?;
+    let resp_rx = qmp::start_qmp_read_thread(&socket, path, event_tx.clone())?;
     let mut connection = qmp::QmpConnection::new(socket, resp_rx);
 
     // Initialize the QMP connection
