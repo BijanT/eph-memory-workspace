@@ -1,6 +1,34 @@
 //! Defines structs for QMP commands and responses
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct QmpCommand {
+    pub execute: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
+}
+
+impl QmpCommand {
+    pub fn new(execute: impl Into<String>) -> Self {
+        Self {
+            execute: execute.into(),
+            arguments: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_arguments<T: Serialize>(
+        execute: impl Into<String>,
+        arguments: T,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            execute: execute.into(),
+            arguments: Some(serde_json::to_value(arguments)?),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Memdev {

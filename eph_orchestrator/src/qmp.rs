@@ -23,7 +23,15 @@ impl QmpConnection {
         }
     }
 
-    pub fn send(&mut self, command: &str) -> Result<serde_json::Value, std::io::Error> {
+    pub fn send(
+        &mut self,
+        command: &types::QmpCommand,
+    ) -> Result<serde_json::Value, std::io::Error> {
+        let command_str = serde_json::to_string(&command)?;
+        self.send_str(&command_str)
+    }
+
+    fn send_str(&mut self, command: &str) -> Result<serde_json::Value, std::io::Error> {
         self.stream.write_all(command.as_bytes())?;
         if !command.ends_with('\n') {
             self.stream.write_all(b"\n")?;
@@ -163,16 +171,15 @@ fn qmp_read_thread(
 /// `qmp_capabilities` command and checking the response.
 pub fn initiate_connection(connection: &mut QmpConnection) -> Result<(), std::io::Error> {
     // Send the QMP capabilities command to the QEMU instance
-    let capabilities_command = r#"{"execute": "qmp_capabilities"}"#;
-    connection.send(capabilities_command)?;
+    let capabilities_command = types::QmpCommand::new("qmp_capabilities");
+    connection.send(&capabilities_command)?;
 
     Ok(())
 }
 
 pub fn get_memdevs(connection: &mut QmpConnection) -> Result<Vec<Memdev>, std::io::Error> {
-    // Send the query-memdev command to the QEMU instance
-    let query_memdev_command = r#"{"execute": "query-memdev"}"#;
-    let mut qmp_response = connection.send(query_memdev_command)?;
+    let query_memdev_command = types::QmpCommand::new("query-memdev");
+    let mut qmp_response = connection.send(&query_memdev_command)?;
 
     let memdevs = qmp_response
         .get_mut("return")
