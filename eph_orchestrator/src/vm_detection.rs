@@ -2,7 +2,6 @@
 //! the system, and determines if new VMs are eligible to be donors.
 
 use std::os::unix::fs::FileTypeExt;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::vec::Vec;
@@ -82,32 +81,6 @@ pub fn vm_detection_thread(
     Ok(())
 }
 
-// Connect to the QMP socket, retrying briefly to cover the race where the
-// socket file has been created but the peer hasn't called listen() yet.
-fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
-    const MAX_ATTEMPTS: u32 = 5;
-    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
-
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
-        match UnixStream::connect(path) {
-            Ok(socket) => return Ok(socket),
-            Err(e) => {
-                let attempts_remaining = attempt + 1 < MAX_ATTEMPTS;
-                if attempts_remaining {
-                    eprintln!(
-                        "Failed to connect to QMP socket {:?}, retrying: {}",
-                        path, e
-                    );
-                    std::thread::sleep(RETRY_DELAY);
-                }
-                last_err = Some(e);
-            }
-        }
-    }
-    Err(last_err.unwrap())
-}
-
 fn handle_new_file(
     donors: &crate::DonorVMList,
     path: &Path,
@@ -130,12 +103,7 @@ fn handle_new_file(
         return Ok(());
     }
 
-    let socket = connect_with_retry(path)?;
-    let resp_rx = qmp::start_qmp_read_thread(&socket, path, event_tx.clone())?;
-    let mut connection = qmp::QmpConnection::new(socket, resp_rx);
-
-    // Initialize the QMP connection
-    crate::qmp::initiate_connection(&mut connection)?;
+    let connection = qmp::QmpConnection::new(path, event_tx.clone())?;
 
     check_new_vm(donors, path, connection)?;
 

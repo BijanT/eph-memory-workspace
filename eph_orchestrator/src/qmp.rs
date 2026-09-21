@@ -16,11 +16,19 @@ pub struct QmpConnection {
 }
 
 impl QmpConnection {
-    pub fn new(stream: UnixStream, response_rx: mpsc::Receiver<serde_json::Value>) -> Self {
-        Self {
+    /// Create a new QMP connection to the specified Unix socket.
+    pub fn new(
+        path: &Path,
+        event_tx: mpsc::Sender<events::QmpEvent>,
+    ) -> Result<Self, std::io::Error> {
+        let stream = connect_with_retry(path)?;
+        let response_rx = start_qmp_read_thread(&stream, path, event_tx)?;
+        let mut conn = Self {
             stream,
             response_rx,
-        }
+        };
+        initiate_connection(&mut conn)?;
+        Ok(conn)
     }
 
     pub fn send(
@@ -79,7 +87,7 @@ impl Drop for QmpConnection {
 /// thread.
 /// Returns a channel for receiving responses to QMP commands using the
 /// connection.
-pub fn start_qmp_read_thread(
+fn start_qmp_read_thread(
     qmp_stream: &UnixStream,
     path: &Path,
     event_tx: mpsc::Sender<events::QmpEvent>,
@@ -169,7 +177,7 @@ fn qmp_read_thread(
 
 /// Initiates a QMP connection with the QEMU instance by sending the
 /// `qmp_capabilities` command and checking the response.
-pub fn initiate_connection(connection: &mut QmpConnection) -> Result<(), std::io::Error> {
+fn initiate_connection(connection: &mut QmpConnection) -> Result<(), std::io::Error> {
     // Send the QMP capabilities command to the QEMU instance
     let capabilities_command = types::QmpCommand::new("qmp_capabilities");
     connection.send(&capabilities_command)?;
@@ -187,4 +195,30 @@ pub fn get_memdevs(connection: &mut QmpConnection) -> Result<Vec<Memdev>, std::i
         .expect("QmpConnection.send() guarantees \"return\" is present on Ok");
     let memdevs: Vec<Memdev> = serde_json::from_value(memdevs)?;
     Ok(memdevs)
+}
+
+// Connect to the QMP socket, retrying briefly to cover the race where the
+// socket file has been created but the peer hasn't called listen() yet.
+fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {
+    const MAX_ATTEMPTS: u32 = 5;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
+    let mut last_err = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match UnixStream::connect(path) {
+            Ok(socket) => return Ok(socket),
+            Err(e) => {
+                let attempts_remaining = attempt + 1 < MAX_ATTEMPTS;
+                if attempts_remaining {
+                    eprintln!(
+                        "Failed to connect to QMP socket {:?}, retrying: {}",
+                        path, e
+                    );
+                    std::thread::sleep(RETRY_DELAY);
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap())
 }
