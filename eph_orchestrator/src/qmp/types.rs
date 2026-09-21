@@ -17,7 +17,6 @@ impl QmpCommand {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_arguments<T: Serialize>(
         execute: impl Into<String>,
         arguments: T,
@@ -85,6 +84,27 @@ impl TryInto<crate::DonatableRegion> for Memdev {
             path,
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct QomListArgs {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct QomListResponse {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct QomGetArgs {
+    pub path: String,
+    pub property: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

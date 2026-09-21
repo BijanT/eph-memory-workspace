@@ -180,7 +180,7 @@ fn qmp_read_thread(
 /// `qmp_capabilities` command and checking the response.
 fn initiate_connection(connection: &mut QmpConnection) -> Result<(), std::io::Error> {
     // Send the QMP capabilities command to the QEMU instance
-    let capabilities_command = types::QmpCommand::new("qmp_capabilities");
+    let capabilities_command = QmpCommand::new("qmp_capabilities");
     connection.send(&capabilities_command)?;
 
     Ok(())
@@ -203,6 +203,30 @@ fn qmp_call<T: DeserializeOwned>(
 pub fn get_memdevs(connection: &mut QmpConnection) -> Result<Vec<Memdev>, std::io::Error> {
     let query_memdev_command = QmpCommand::new("query-memdev");
     qmp_call(connection, &query_memdev_command)
+}
+
+pub fn qom_list(
+    connection: &mut QmpConnection,
+    path: &str,
+) -> Result<Vec<types::QomListResponse>, std::io::Error> {
+    let args = types::QomListArgs {
+        path: path.to_string(),
+    };
+    let command = QmpCommand::with_arguments("qom-list", args)?;
+    qmp_call(connection, &command)
+}
+
+pub fn qom_get<T: serde::de::DeserializeOwned>(
+    connection: &mut QmpConnection,
+    path: &str,
+    property: &str,
+) -> Result<T, std::io::Error> {
+    let args = types::QomGetArgs {
+        path: path.to_string(),
+        property: property.to_string(),
+    };
+    let command = QmpCommand::with_arguments("qom-get", args)?;
+    qmp_call(connection, &command)
 }
 
 // Connect to the QMP socket, retrying briefly to cover the race where the

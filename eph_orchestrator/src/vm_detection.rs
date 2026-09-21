@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::vec::Vec;
 
-use crate::qmp;
+use crate::{consumer, qmp};
 use notify::Watcher;
 
 /// The main function for the vm_detection thread.
@@ -134,10 +134,14 @@ fn check_new_vm(
         None
     };
 
+    // If the VM has a DCD region, set its consumer state
+    let consumer_state = consumer::get_consumer_state(path, &mut connection)?;
+
     let new_vm = Arc::new(crate::Vm {
         qmp_socket_path: path.to_path_buf(),
         qmp: Mutex::new(connection),
         donor: donatable_state,
+        consumer: consumer_state,
     });
 
     vms.write().unwrap().push(new_vm);
