@@ -15,15 +15,15 @@ use notify::Watcher;
 /// and leaving. A new QMP socket indicates a new VM has been created, and
 /// this function will determine if that VM is a potential donor. A QMP
 /// socket leaving indicates that a VM has been destroyed, and this function
-/// will remove that VM from the list of potential donors.
+/// will remove that VM from the list of VMs.
 ///
 /// # Arguments
 ///
-/// * `donors` - The list of potential donor VMs that will be updated.
+/// * `vms` - The list of all VMs that will be updated.
 /// * `qmp_path` - The path to the directory to watch for QMP sockets.
 /// * `event_tx` - The channel to send QMP events to the event handling thread.
 pub fn vm_detection_thread(
-    donors: &crate::DonorVMList,
+    vms: &crate::VmList,
     qmp_path: &str,
     event_tx: mpsc::Sender<qmp::events::QmpEvent>,
 ) -> Result<(), std::io::Error> {
@@ -52,7 +52,7 @@ pub fn vm_detection_thread(
             }
         };
         let path = entry.path();
-        if let Err(e) = handle_new_file(donors, &path, &event_tx) {
+        if let Err(e) = handle_new_file(vms, &path, &event_tx) {
             eprintln!("Error handling {:?}: {}", path, e);
         }
     }
@@ -69,12 +69,12 @@ pub fn vm_detection_thread(
 
         if event.kind.is_create() {
             for path in event.paths {
-                if let Err(e) = handle_new_file(donors, &path, &event_tx) {
+                if let Err(e) = handle_new_file(vms, &path, &event_tx) {
                     eprintln!("Error handling {:?}: {}", path, e);
                 }
             }
         } else if event.kind.is_remove() {
-            crate::remove_donor_vms(donors, event.paths.as_slice());
+            crate::remove_vms(vms, event.paths.as_slice());
         }
     }
 
@@ -82,7 +82,7 @@ pub fn vm_detection_thread(
 }
 
 fn handle_new_file(
-    donors: &crate::DonorVMList,
+    vms: &crate::VmList,
     path: &Path,
     event_tx: &mpsc::Sender<qmp::events::QmpEvent>,
 ) -> Result<(), std::io::Error> {
@@ -94,7 +94,7 @@ fn handle_new_file(
     }
 
     // Already registered, e.g. seen by both the initial scan and a watch event.
-    if donors
+    if vms
         .read()
         .unwrap()
         .iter()
@@ -105,17 +105,17 @@ fn handle_new_file(
 
     let connection = qmp::QmpConnection::new(path, event_tx.clone())?;
 
-    check_new_vm(donors, path, connection)?;
+    check_new_vm(vms, path, connection)?;
 
     Ok(())
 }
 
-// Check if a newly identified VM is eligible to be a donor. If it is, add it
-// to the list of donors.
+// Add the newly detected VM to the VM list, setting its donor state if it has
+// any donatable memory regions.
 // Transfer ownership of the connection to this function, so it can be given to
-// the DonorVM struct if the VM is eligible to be a donor.
+// the Vm struct.
 fn check_new_vm(
-    donors: &crate::DonorVMList,
+    vms: &crate::VmList,
     path: &Path,
     mut connection: qmp::QmpConnection,
 ) -> Result<(), std::io::Error> {
@@ -125,18 +125,22 @@ fn check_new_vm(
         .filter_map(|m| m.try_into().ok())
         .collect::<Vec<crate::DonatableRegion>>();
 
-    // If the VM has at least one donatable region, add it to the list of donors.
-    if !donatable_regions.is_empty() {
-        let donor_state = crate::DonorState {
-            connection,
-            donatable_regions,
-        };
-        let donor_vm = crate::DonorVM {
-            qmp_socket_path: path.to_path_buf(),
-            state: Mutex::new(donor_state),
-        };
-        donors.write().unwrap().push(Arc::new(donor_vm));
-    }
+    // If the VM has at least one donatable region, set its donor state.
+    let donatable_state = if !donatable_regions.is_empty() {
+        Some(crate::DonorState {
+            mut_state: Mutex::new(crate::DonorMutState { donatable_regions }),
+        })
+    } else {
+        None
+    };
+
+    let new_vm = Arc::new(crate::Vm {
+        qmp_socket_path: path.to_path_buf(),
+        qmp: Mutex::new(connection),
+        donor: donatable_state,
+    });
+
+    vms.write().unwrap().push(new_vm);
 
     Ok(())
 }

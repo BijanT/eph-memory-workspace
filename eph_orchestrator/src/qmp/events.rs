@@ -14,7 +14,7 @@ pub struct QmpEvent {
 }
 
 pub fn qmp_event_handler_thread(
-    donors: &crate::DonorVMList,
+    vms: &crate::VmList,
     event_rx: mpsc::Receiver<QmpEvent>,
 ) -> Result<(), std::io::Error> {
     for event in event_rx {
@@ -28,7 +28,7 @@ pub fn qmp_event_handler_thread(
         // Might want to spawn a thread for each event, or even have multiple
         // threads for handling events and add events to a queue for processing.
         // For now, just handle them synchronously in the same thread.
-        if let Err(e) = handle_event(donors, &event.vm_path, event_name, event_data) {
+        if let Err(e) = handle_event(vms, &event.vm_path, event_name, event_data) {
             eprintln!(
                 "{}: Error handling {} event: {}",
                 event.vm_path.display(),
@@ -48,7 +48,7 @@ fn parse_event_data<'de, T: Deserialize<'de>>(
 }
 
 fn handle_event(
-    _donors: &crate::DonorVMList,
+    _vms: &crate::VmList,
     vm_path: &Path,
     event_name: &str,
     event_data: &serde_json::Value,
