@@ -3,12 +3,13 @@
 pub mod events;
 mod types;
 
+use serde::de::DeserializeOwned;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use types::Memdev;
+use types::{Memdev, QmpCommand};
 
 pub struct QmpConnection {
     stream: UnixStream,
@@ -185,16 +186,23 @@ fn initiate_connection(connection: &mut QmpConnection) -> Result<(), std::io::Er
     Ok(())
 }
 
-pub fn get_memdevs(connection: &mut QmpConnection) -> Result<Vec<Memdev>, std::io::Error> {
-    let query_memdev_command = types::QmpCommand::new("query-memdev");
-    let mut qmp_response = connection.send(&query_memdev_command)?;
+fn qmp_call<T: DeserializeOwned>(
+    connection: &mut QmpConnection,
+    command: &QmpCommand,
+) -> Result<T, std::io::Error> {
+    let mut qmp_response = connection.send(command)?;
 
-    let memdevs = qmp_response
+    let return_value = qmp_response
         .get_mut("return")
         .map(std::mem::take)
         .expect("QmpConnection.send() guarantees \"return\" is present on Ok");
-    let memdevs: Vec<Memdev> = serde_json::from_value(memdevs)?;
-    Ok(memdevs)
+    let return_value: T = serde_json::from_value(return_value)?;
+    Ok(return_value)
+}
+
+pub fn get_memdevs(connection: &mut QmpConnection) -> Result<Vec<Memdev>, std::io::Error> {
+    let query_memdev_command = QmpCommand::new("query-memdev");
+    qmp_call(connection, &query_memdev_command)
 }
 
 // Connect to the QMP socket, retrying briefly to cover the race where the
