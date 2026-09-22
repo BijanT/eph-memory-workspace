@@ -1,4 +1,5 @@
 mod consumer;
+mod donor;
 mod qmp;
 mod vm_detection;
 
@@ -7,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread;
 
 use consumer::ConsumerState;
+use donor::DonorState;
 
 #[allow(dead_code)]
 const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
@@ -23,28 +25,6 @@ struct Vm {
     donor: Option<DonorState>,
     /* Internal state for ConsumerVMs */
     consumer: Option<ConsumerState>,
-}
-
-#[allow(dead_code)]
-struct DonorState {
-    /* The donor's mutable state */
-    mut_state: Mutex<DonorMutState>,
-}
-
-#[allow(dead_code)]
-struct DonorMutState {
-    /* The list of donatable regions available in the donor VM */
-    donatable_regions: Vec<DonatableRegion>,
-}
-
-#[allow(dead_code)]
-struct DonatableRegion {
-    /* The total memory available in the memory region */
-    size: u64,
-    /* The amount of memory that has been donated from this region */
-    donated: u64,
-    /* The path to the QEMU memory backend device for this donatable region */
-    path: String,
 }
 
 type VmList = RwLock<Vec<Arc<Vm>>>;

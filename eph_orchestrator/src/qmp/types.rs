@@ -1,4 +1,5 @@
 //! Defines structs for QMP commands and responses
+use crate::donor::DonatableRegion;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,10 +67,10 @@ impl Memdev {
     }
 }
 
-impl TryInto<crate::DonatableRegion> for Memdev {
+impl TryInto<DonatableRegion> for Memdev {
     type Error = &'static str;
 
-    fn try_into(self) -> Result<crate::DonatableRegion, Self::Error> {
+    fn try_into(self) -> Result<DonatableRegion, Self::Error> {
         if !self.is_donatable() {
             return Err("Memdev is not donatable");
         }
@@ -78,11 +79,7 @@ impl TryInto<crate::DonatableRegion> for Memdev {
         let id = self.id.unwrap();
         let path = format!("/objects/{}", id);
 
-        Ok(crate::DonatableRegion {
-            size: self.size,
-            donated: 0,
-            path,
-        })
+        Ok(DonatableRegion::new(self.size, path))
     }
 }
 

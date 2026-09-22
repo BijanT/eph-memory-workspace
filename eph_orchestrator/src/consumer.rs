@@ -39,6 +39,61 @@ struct DcdAllocation {
     donor_qmp_path: PathBuf,
 }
 
+impl ConsumerState {
+    pub fn new(qmp_path: &Path, conn: &mut qmp::QmpConnection) -> std::io::Result<Option<Self>> {
+        let qom_base_path = "/machine/peripheral";
+        let cxl_dcd_type = "cxl-type3";
+        // By convention, the QMP socket will be <qmp_dir>/<vsock_cid>.qmp
+        let Some(cid) = qmp_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            return Ok(None);
+        };
+
+        // Find the QEMU path and size for the CXL DCD device.
+        // An error here could just mean that "/machine/peripheral" doesn't exist,
+        // so we shouldn't treat that as a fatal error.
+        let obj_list = match qmp::qom_list(conn, qom_base_path) {
+            Ok(list) => list,
+            Err(_) => return Ok(None),
+        };
+        for obj in obj_list {
+            if obj.type_.contains(cxl_dcd_type) {
+                let qom_path = format!("{}/{}", qom_base_path, obj.name);
+
+                // Every cxl-type3 device has a "volatile-dc-memdev" link
+                // property, but it's only set if the device is actually
+                // configured for Dynamic Capacity -- an unconfigured link reads
+                // back as an empty string rather than an error. Treat that as
+                // "not a DCD" and keep looking, rather than erroring out (which
+                // would abort registration of the whole VM, donor state and
+                // all, via the `?` in check_new_vm).
+                let memdev_path = qmp::qom_get::<String>(conn, &qom_path, "volatile-dc-memdev")?;
+                if memdev_path.is_empty() {
+                    continue;
+                }
+
+                // Now that we have the memdev path, we can get the size
+                let size = qmp::qom_get::<u64>(conn, &memdev_path, "size")?;
+
+                let consumer_state = Self {
+                    vsock_cid: cid,
+                    qom_path,
+                    size,
+                    mut_state: Mutex::new(ConsumerMutState {
+                        vsock_conn: None,
+                        allocated_areas: BTreeMap::new(),
+                    }),
+                };
+                return Ok(Some(consumer_state));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Thread that waits for consumer VMs to connect for the first time.
 /// Spawns a new thread for each consumer VM that connects.
 ///

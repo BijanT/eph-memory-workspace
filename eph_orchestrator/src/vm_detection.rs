@@ -4,9 +4,8 @@
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
-use std::vec::Vec;
 
-use crate::{consumer, qmp};
+use crate::{consumer, donor, qmp};
 use notify::Watcher;
 
 /// The main function for the vm_detection thread.
@@ -119,23 +118,10 @@ fn check_new_vm(
     path: &Path,
     mut connection: qmp::QmpConnection,
 ) -> Result<(), std::io::Error> {
-    // Get the list of the VM's memory devices.
-    let donatable_regions = qmp::get_memdevs(&mut connection)?
-        .into_iter()
-        .filter_map(|m| m.try_into().ok())
-        .collect::<Vec<crate::DonatableRegion>>();
-
-    // If the VM has at least one donatable region, set its donor state.
-    let donatable_state = if !donatable_regions.is_empty() {
-        Some(crate::DonorState {
-            mut_state: Mutex::new(crate::DonorMutState { donatable_regions }),
-        })
-    } else {
-        None
-    };
+    let donatable_state = donor::DonorState::new(&mut connection)?;
 
     // If the VM has a DCD region, set its consumer state
-    let consumer_state = consumer::get_consumer_state(path, &mut connection)?;
+    let consumer_state = consumer::ConsumerState::new(path, &mut connection)?;
 
     let new_vm = Arc::new(crate::Vm {
         qmp_socket_path: path.to_path_buf(),
