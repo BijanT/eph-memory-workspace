@@ -3,6 +3,7 @@ mod donor;
 mod qmp;
 mod vm_detection;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::thread;
@@ -27,17 +28,19 @@ struct Vm {
     consumer: Option<ConsumerState>,
 }
 
-type VmList = RwLock<Vec<Arc<Vm>>>;
+type VmList = RwLock<BTreeMap<PathBuf, Arc<Vm>>>;
 
 fn remove_vms(vms: &VmList, paths: &[PathBuf]) {
     let mut vms = vms.write().unwrap();
-    vms.retain(|vm| !paths.contains(&vm.qmp_socket_path));
+    for p in paths {
+        vms.remove(p);
+    }
 }
 
 fn main() {
     println!("Starting eph_orchestrator...");
 
-    let vms = Arc::new(RwLock::new(Vec::new()));
+    let vms = Arc::new(RwLock::new(BTreeMap::new()));
 
     thread::scope(|s| {
         let (event_tx, event_rx) = mpsc::channel();
@@ -58,7 +61,7 @@ fn main() {
 
         let vm_list = vms.clone();
         s.spawn(move || {
-            if let Err(e) = consumer::consumer_listener_thread(vm_list, VSOCK_PORT) {
+            if let Err(e) = consumer::consumer_listener_thread(vm_list, VSOCK_PORT, QMP_DIRECTORY) {
                 eprintln!("Error in consumer listener thread: {}", e);
             }
         });

@@ -99,9 +99,11 @@ impl ConsumerState {
 ///
 /// * `vms` - The list of VMs that have connected.
 /// * `listening_port` - The port to listen on for new consumer VM connections.
+/// * `qmp_path` - The path to the directory where QMP sockets are stored.
 pub fn consumer_listener_thread(
     vms: Arc<crate::VmList>,
     listening_port: u32,
+    qmp_path: &str,
 ) -> std::io::Result<()> {
     // Listen for new connections from any VM.
     let listen_address = VsockAddr::new(VMADDR_CID_ANY, listening_port);
@@ -121,18 +123,14 @@ pub fn consumer_listener_thread(
             addr.port()
         );
 
+        // By convention, the consumer VM's QMP socket will be at <qmp_dir>/<vsock_cid>.qmp
+        let qmp_path = format!("{}/{}.qmp", qmp_path, addr.cid());
+
         // Find the VM corresponding to the CID of the connecting consumer VM.
         let Some(consumer) = vms
             .read()
             .unwrap()
-            .iter()
-            .find(|vm| {
-                if let Some(consumer_state) = &vm.consumer {
-                    consumer_state.vsock_cid == addr.cid()
-                } else {
-                    false
-                }
-            })
+            .get(&PathBuf::from(&qmp_path))
             .cloned()
         else {
             eprintln!(

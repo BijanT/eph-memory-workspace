@@ -96,8 +96,7 @@ fn handle_new_file(
     if vms
         .read()
         .unwrap()
-        .iter()
-        .any(|d| d.qmp_socket_path == path)
+        .contains_key(path)
     {
         return Ok(());
     }
@@ -130,7 +129,7 @@ fn check_new_vm(
         consumer: consumer_state,
     });
 
-    vms.write().unwrap().push(new_vm);
+    vms.write().unwrap().insert(path.to_path_buf(), new_vm);
 
     Ok(())
 }
