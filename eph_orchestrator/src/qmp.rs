@@ -229,6 +229,54 @@ pub fn qom_get<T: serde::de::DeserializeOwned>(
     qmp_call(connection, &command)
 }
 
+pub fn eph_mem_donate_capacity(
+    connection: &mut QmpConnection,
+    qom_path: &str,
+    size: u64,
+) -> std::io::Result<u64> {
+    let args = types::EphMemDonateCapacityData {
+        path: qom_path.to_string(),
+        size,
+    };
+    let command = QmpCommand::with_arguments("eph-mem-donate-capacity", args)?;
+    let result: types::EphMemDonateResult = qmp_call(connection, &command)?;
+    Ok(result.granted)
+}
+
+pub fn eph_mem_return_capacity(
+    connection: &mut QmpConnection,
+    qom_path: &str,
+    size: u64,
+) -> std::io::Result<()> {
+    let args = types::EphMemReturnCapacityData {
+        path: qom_path.to_string(),
+        size,
+        id: None,
+    };
+    let command = QmpCommand::with_arguments("eph-mem-return-capacity", args)?;
+    connection.send(&command)?;
+    Ok(())
+}
+
+pub fn cxl_add_dynamic_capacity(
+    connection: &mut QmpConnection,
+    qom_path: &str,
+    offset: u64,
+    len: u64,
+) -> std::io::Result<()> {
+    let args = types::CxlAddDynamicCapacityArgs {
+        path: qom_path.to_string(),
+        host_id: 0,
+        selection_policy: types::CxlExtentSelectionPolicy::Prescriptive,
+        region: 0,
+        tag: None,
+        extents: vec![types::CxlDynamicCapacityExtent { offset, len }],
+    };
+    let command = QmpCommand::with_arguments("cxl-add-dynamic-capacity", args)?;
+    connection.send(&command)?;
+    Ok(())
+}
+
 // Connect to the QMP socket, retrying briefly to cover the race where the
 // socket file has been created but the peer hasn't called listen() yet.
 fn connect_with_retry(path: &Path) -> std::io::Result<UnixStream> {

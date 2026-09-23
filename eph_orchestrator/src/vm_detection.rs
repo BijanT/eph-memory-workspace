@@ -93,11 +93,7 @@ fn handle_new_file(
     }
 
     // Already registered, e.g. seen by both the initial scan and a watch event.
-    if vms
-        .read()
-        .unwrap()
-        .contains_key(path)
-    {
+    if vms.read().unwrap().contains_key(path) {
         return Ok(());
     }
 
@@ -117,17 +113,47 @@ fn check_new_vm(
     path: &Path,
     mut connection: qmp::QmpConnection,
 ) -> Result<(), std::io::Error> {
-    let donatable_state = donor::DonorState::new(&mut connection)?;
+    // DonorState/ConsumerState hold a Weak<Vm> back-pointer to their parent
+    // Vm, so they need to be built inside the Vm's own construction via
+    // Arc::new_cyclic. Construction can still fail (e.g. a QMP error), so
+    // stash the first error encountered here and check it after the Arc is
+    // built, rather than trying to bail out of the closure directly.
+    let mut init_err = None;
 
-    // If the VM has a DCD region, set its consumer state
-    let consumer_state = consumer::ConsumerState::new(path, &mut connection)?;
+    let new_vm = Arc::new_cyclic(|weak_vm| {
+        let donor_state =
+            donor::DonorState::new(weak_vm.clone(), &mut connection).unwrap_or_else(|e| {
+                init_err.get_or_insert(e);
+                None
+            });
 
-    let new_vm = Arc::new(crate::Vm {
-        qmp_socket_path: path.to_path_buf(),
-        qmp: Mutex::new(connection),
-        donor: donatable_state,
-        consumer: consumer_state,
+        // If the VM has a DCD region, set its consumer state. Skip the probe
+        // entirely if the donor probe already failed, since the connection is
+        // presumed broken and the result would be discarded anyway.
+        let consumer_state = if init_err.is_none() {
+            consumer::ConsumerState::new(weak_vm.clone(), path, &mut connection).unwrap_or_else(
+                |e| {
+                    init_err.get_or_insert(e);
+                    None
+                },
+            )
+        } else {
+            None
+        };
+
+        crate::Vm {
+            qmp_socket_path: path.to_path_buf(),
+            qmp: Mutex::new(connection),
+            donor: donor_state,
+            consumer: consumer_state,
+        }
     });
+
+    // Discard the Vm if any of the initialization failed. We don't want to
+    // trust a potentially misbehaving VM.
+    if let Some(e) = init_err {
+        return Err(e);
+    }
 
     vms.write().unwrap().insert(path.to_path_buf(), new_vm);
 

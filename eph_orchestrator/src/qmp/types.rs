@@ -106,9 +106,9 @@ pub struct QomGetArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct CxlDynamicCapacityExtent {
-    offset: u64,
-    len: u64,
+pub struct CxlDynamicCapacityExtent {
+    pub offset: u64,
+    pub len: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +122,34 @@ pub struct CxlAddReleaseCapacityEventData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum CxlExtentSelectionPolicy {
+    Free,
+    Contiguous,
+    // The only one we actually use. Keep the rest for completeness.
+    Prescriptive,
+    EnableSharedAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CxlAddDynamicCapacityArgs {
+    // Path to the DCD device to give capacity to
+    pub path: String,
+    // The "host-id" of a host in a CXL pool. Not used here
+    pub host_id: u16,
+    // How to select extents from the donor's memory pool. We always use "Prescriptive"
+    pub selection_policy: CxlExtentSelectionPolicy,
+    // The region number to use for allocation. We always use 0.
+    pub region: u8,
+    // Tag to name the capacity. Not used here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    // The extents to add to the DCD device.
+    pub extents: Vec<CxlDynamicCapacityExtent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct EphMemRevokeEventData {
     // Path to the DCD device triggering this event in the QOM
     path: String,
@@ -129,4 +157,32 @@ pub struct EphMemRevokeEventData {
     size: u64,
     // The ID to tie this event to returned memory. Not currently used.
     id: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EphMemDonateCapacityData {
+    // Path to the DCD device to request data from
+    pub path: String,
+    // The amount of memory requested in bytes
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EphMemDonateResult {
+    // The amount of memory that was actually donated in bytes
+    pub granted: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct EphMemReturnCapacityData {
+    // Path to the DCD device to return memory to
+    pub path: String,
+    // The amount of memory to return in bytes
+    pub size: u64,
+    // The ID to tie the return to a revoke event. Not currently used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<i32>,
 }
