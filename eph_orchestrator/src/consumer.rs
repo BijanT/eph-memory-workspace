@@ -8,7 +8,6 @@ use crate::{EphAllocation, Vm, VmList, donor, qmp};
 use serde::{Deserialize, Serialize};
 use vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
 
-#[allow(dead_code)]
 pub struct ConsumerState {
     /* Back-pointer to the Vm that owns this consumer state */
     vm: Weak<Vm>,
@@ -22,7 +21,6 @@ pub struct ConsumerState {
     mut_state: Mutex<ConsumerMutState>,
 }
 
-#[allow(dead_code)]
 struct ConsumerMutState {
     /* The Vsock stream for communicating with the consumer guest */
     vsock_conn: Option<VsockStream>,
@@ -152,7 +150,6 @@ impl ConsumerState {
     /// Returns the `Vm` that owns this consumer state. Since a `ConsumerState`
     /// is only ever reachable through the `Arc<Vm>` that owns it, the parent
     /// Vm is guaranteed to still be alive here.
-    #[allow(dead_code)]
     fn vm(&self) -> Arc<Vm> {
         self.vm
             .upgrade()

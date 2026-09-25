@@ -28,7 +28,6 @@ const VSOCK_PORT: u32 = 1848;
 // state mutexes at the same time, since we do not do that. If that pattern
 // appears, we will define an ordering for those locks as well.
 
-#[allow(dead_code)]
 struct Vm {
     /* The immutable path to the QMP socket */
     qmp_socket_path: PathBuf,

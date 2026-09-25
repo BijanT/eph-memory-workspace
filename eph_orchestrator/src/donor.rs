@@ -8,7 +8,6 @@ use crate::qmp::QmpConnection;
 use crate::qmp::{self, eph_mem_donate_capacity};
 use crate::{EphAllocation, Vm};
 
-#[allow(dead_code)]
 pub struct DonorState {
     /* Back-pointer to the Vm that owns this donor state */
     vm: Weak<Vm>,
@@ -16,7 +15,6 @@ pub struct DonorState {
     mut_state: Mutex<DonorMutState>,
 }
 
-#[allow(dead_code)]
 struct DonorMutState {
     /* The list of donatable regions available in the donor VM */
     donatable_regions: Vec<DonatableRegion>,
@@ -40,7 +38,6 @@ impl DonorMutState {
     }
 }
 
-#[allow(dead_code)]
 pub struct DonatableRegion {
     /* The total memory available in the memory region */
     size: u64,
@@ -57,7 +54,6 @@ pub struct DonatableRegion {
     allocations: Vec<Arc<EphAllocation>>,
 }
 
-#[allow(dead_code)]
 impl DonorState {
     pub fn new(vm: Weak<Vm>, conn: &mut QmpConnection) -> std::io::Result<Option<Self>> {
         // Get the list of the VM's memory devices.
@@ -79,7 +75,6 @@ impl DonorState {
     /// Returns the `Vm` that owns this donor state. Since a `DonorState` is
     /// only ever reachable through the `Arc<Vm>` that owns it, the parent Vm
     /// is guaranteed to still be alive here.
-    #[allow(dead_code)]
     fn vm(&self) -> Arc<Vm> {
         self.vm
             .upgrade()
