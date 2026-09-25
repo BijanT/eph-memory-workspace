@@ -28,7 +28,7 @@ impl QmpConnection {
             stream,
             response_rx,
         };
-        initiate_connection(&mut conn)?;
+        conn.initiate_connection()?;
         Ok(conn)
     }
 
@@ -73,6 +73,91 @@ impl QmpConnection {
                 response
             )))
         }
+    }
+
+    /// Initiates a QMP connection with the QEMU instance by sending the
+    /// `qmp_capabilities` command and checking the response.
+    fn initiate_connection(&mut self) -> Result<(), std::io::Error> {
+        let capabilities_command = QmpCommand::new("qmp_capabilities");
+        self.send(&capabilities_command)?;
+        Ok(())
+    }
+
+    fn qmp_call<T: DeserializeOwned>(&mut self, command: &QmpCommand) -> Result<T, std::io::Error> {
+        let mut qmp_response = self.send(command)?;
+
+        let return_value = qmp_response
+            .get_mut("return")
+            .map(std::mem::take)
+            .expect("QmpConnection.send() guarantees \"return\" is present on Ok");
+        let return_value: T = serde_json::from_value(return_value)?;
+        Ok(return_value)
+    }
+
+    pub fn get_memdevs(&mut self) -> Result<Vec<Memdev>, std::io::Error> {
+        let query_memdev_command = QmpCommand::new("query-memdev");
+        self.qmp_call(&query_memdev_command)
+    }
+
+    pub fn qom_list(&mut self, path: &str) -> Result<Vec<types::QomListResponse>, std::io::Error> {
+        let args = types::QomListArgs {
+            path: path.to_string(),
+        };
+        let command = QmpCommand::with_arguments("qom-list", args)?;
+        self.qmp_call(&command)
+    }
+
+    pub fn qom_get<T: serde::de::DeserializeOwned>(
+        &mut self,
+        path: &str,
+        property: &str,
+    ) -> Result<T, std::io::Error> {
+        let args = types::QomGetArgs {
+            path: path.to_string(),
+            property: property.to_string(),
+        };
+        let command = QmpCommand::with_arguments("qom-get", args)?;
+        self.qmp_call(&command)
+    }
+
+    pub fn eph_mem_donate_capacity(&mut self, qom_path: &str, size: u64) -> std::io::Result<u64> {
+        let args = types::EphMemDonateCapacityData {
+            path: qom_path.to_string(),
+            size,
+        };
+        let command = QmpCommand::with_arguments("eph-mem-donate-capacity", args)?;
+        let result: types::EphMemDonateResult = self.qmp_call(&command)?;
+        Ok(result.granted)
+    }
+
+    pub fn eph_mem_return_capacity(&mut self, qom_path: &str, size: u64) -> std::io::Result<()> {
+        let args = types::EphMemReturnCapacityData {
+            path: qom_path.to_string(),
+            size,
+            id: None,
+        };
+        let command = QmpCommand::with_arguments("eph-mem-return-capacity", args)?;
+        self.send(&command)?;
+        Ok(())
+    }
+
+    pub fn cxl_add_dynamic_capacity(
+        &mut self,
+        qom_path: &str,
+        offset: u64,
+        len: u64,
+    ) -> std::io::Result<()> {
+        let args = types::CxlAddDynamicCapacityArgs {
+            path: qom_path.to_string(),
+            host_id: 0,
+            selection_policy: types::CxlExtentSelectionPolicy::Prescriptive,
+            region: 0,
+            tag: None,
+            extents: vec![types::CxlDynamicCapacityExtent { offset, len }],
+        };
+        let command = QmpCommand::with_arguments("cxl-add-dynamic-capacity", args)?;
+        self.send(&command)?;
+        Ok(())
     }
 }
 
@@ -174,107 +259,6 @@ fn qmp_read_thread(
         }
     }
     eprintln!("{}: Exiting QMP read thread", vm_path.display());
-}
-
-/// Initiates a QMP connection with the QEMU instance by sending the
-/// `qmp_capabilities` command and checking the response.
-fn initiate_connection(connection: &mut QmpConnection) -> Result<(), std::io::Error> {
-    // Send the QMP capabilities command to the QEMU instance
-    let capabilities_command = QmpCommand::new("qmp_capabilities");
-    connection.send(&capabilities_command)?;
-
-    Ok(())
-}
-
-fn qmp_call<T: DeserializeOwned>(
-    connection: &mut QmpConnection,
-    command: &QmpCommand,
-) -> Result<T, std::io::Error> {
-    let mut qmp_response = connection.send(command)?;
-
-    let return_value = qmp_response
-        .get_mut("return")
-        .map(std::mem::take)
-        .expect("QmpConnection.send() guarantees \"return\" is present on Ok");
-    let return_value: T = serde_json::from_value(return_value)?;
-    Ok(return_value)
-}
-
-pub fn get_memdevs(connection: &mut QmpConnection) -> Result<Vec<Memdev>, std::io::Error> {
-    let query_memdev_command = QmpCommand::new("query-memdev");
-    qmp_call(connection, &query_memdev_command)
-}
-
-pub fn qom_list(
-    connection: &mut QmpConnection,
-    path: &str,
-) -> Result<Vec<types::QomListResponse>, std::io::Error> {
-    let args = types::QomListArgs {
-        path: path.to_string(),
-    };
-    let command = QmpCommand::with_arguments("qom-list", args)?;
-    qmp_call(connection, &command)
-}
-
-pub fn qom_get<T: serde::de::DeserializeOwned>(
-    connection: &mut QmpConnection,
-    path: &str,
-    property: &str,
-) -> Result<T, std::io::Error> {
-    let args = types::QomGetArgs {
-        path: path.to_string(),
-        property: property.to_string(),
-    };
-    let command = QmpCommand::with_arguments("qom-get", args)?;
-    qmp_call(connection, &command)
-}
-
-pub fn eph_mem_donate_capacity(
-    connection: &mut QmpConnection,
-    qom_path: &str,
-    size: u64,
-) -> std::io::Result<u64> {
-    let args = types::EphMemDonateCapacityData {
-        path: qom_path.to_string(),
-        size,
-    };
-    let command = QmpCommand::with_arguments("eph-mem-donate-capacity", args)?;
-    let result: types::EphMemDonateResult = qmp_call(connection, &command)?;
-    Ok(result.granted)
-}
-
-pub fn eph_mem_return_capacity(
-    connection: &mut QmpConnection,
-    qom_path: &str,
-    size: u64,
-) -> std::io::Result<()> {
-    let args = types::EphMemReturnCapacityData {
-        path: qom_path.to_string(),
-        size,
-        id: None,
-    };
-    let command = QmpCommand::with_arguments("eph-mem-return-capacity", args)?;
-    connection.send(&command)?;
-    Ok(())
-}
-
-pub fn cxl_add_dynamic_capacity(
-    connection: &mut QmpConnection,
-    qom_path: &str,
-    offset: u64,
-    len: u64,
-) -> std::io::Result<()> {
-    let args = types::CxlAddDynamicCapacityArgs {
-        path: qom_path.to_string(),
-        host_id: 0,
-        selection_policy: types::CxlExtentSelectionPolicy::Prescriptive,
-        region: 0,
-        tag: None,
-        extents: vec![types::CxlDynamicCapacityExtent { offset, len }],
-    };
-    let command = QmpCommand::with_arguments("cxl-add-dynamic-capacity", args)?;
-    connection.send(&command)?;
-    Ok(())
 }
 
 // Connect to the QMP socket, retrying briefly to cover the race where the

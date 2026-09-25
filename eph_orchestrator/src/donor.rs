@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::qmp::QmpConnection;
-use crate::qmp::{self, eph_mem_donate_capacity};
 use crate::{EphAllocation, Vm};
 
 pub struct DonorState {
@@ -57,7 +56,8 @@ pub struct DonatableRegion {
 impl DonorState {
     pub fn new(vm: Weak<Vm>, conn: &mut QmpConnection) -> std::io::Result<Option<Self>> {
         // Get the list of the VM's memory devices.
-        let donatable_regions = qmp::get_memdevs(conn)?
+        let donatable_regions = conn
+            .get_memdevs()?
             .into_iter()
             .filter_map(|m| m.try_into().ok())
             .collect::<Vec<DonatableRegion>>();
@@ -174,9 +174,12 @@ impl DonorState {
             let donor_state = donor_vm.donor.as_ref().unwrap();
 
             // Send a QMP command requesting rsvd_size bytes from the donor.
-            let Ok(size) =
-                eph_mem_donate_capacity(&mut donor_vm.qmp.lock().unwrap(), &qom_path, rsvd_size)
-                    .inspect_err(|e| eprintln!("QMP error while getting eph memory: {}", e))
+            let Ok(size) = donor_vm
+                .qmp
+                .lock()
+                .unwrap()
+                .eph_mem_donate_capacity(&qom_path, rsvd_size)
+                .inspect_err(|e| eprintln!("QMP error while getting eph memory: {}", e))
             else {
                 // If the QMP command fails, handle the failed allocation and
                 // continue searching for another donor.
@@ -213,8 +216,11 @@ impl DonorState {
 
     pub fn return_eph_memory(&self, qom_path: &str, size: u64) -> std::io::Result<()> {
         let donor_vm = self.vm();
-        let mut qmp = donor_vm.qmp.lock().unwrap();
-        qmp::eph_mem_return_capacity(&mut qmp, qom_path, size)
+        donor_vm
+            .qmp
+            .lock()
+            .unwrap()
+            .eph_mem_return_capacity(qom_path, size)
             .inspect_err(|e| eprintln!("QMP error while returning eph memory: {}", e))
     }
 

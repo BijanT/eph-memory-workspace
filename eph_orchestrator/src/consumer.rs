@@ -51,7 +51,7 @@ impl ConsumerState {
         // Find the QEMU path and size for the CXL DCD device.
         // An error here could just mean that "/machine/peripheral" doesn't exist,
         // so we shouldn't treat that as a fatal error.
-        let obj_list = match qmp::qom_list(conn, qom_base_path) {
+        let obj_list = match conn.qom_list(qom_base_path) {
             Ok(list) => list,
             Err(_) => return Ok(None),
         };
@@ -66,13 +66,13 @@ impl ConsumerState {
                 // "not a DCD" and keep looking, rather than erroring out (which
                 // would abort registration of the whole VM, donor state and
                 // all, via the `?` in check_new_vm).
-                let memdev_path = qmp::qom_get::<String>(conn, &qom_path, "volatile-dc-memdev")?;
+                let memdev_path = conn.qom_get::<String>(&qom_path, "volatile-dc-memdev")?;
                 if memdev_path.is_empty() {
                     continue;
                 }
 
                 // Now that we have the memdev path, we can get the size
-                let size = qmp::qom_get::<u64>(conn, &memdev_path, "size")?;
+                let size = conn.qom_get::<u64>(&memdev_path, "size")?;
 
                 let consumer_state = Self {
                     vm,
@@ -126,12 +126,7 @@ impl ConsumerState {
         let result = {
             let consumer_vm = self.vm();
             let mut qmp = consumer_vm.qmp.lock().unwrap();
-            qmp::cxl_add_dynamic_capacity(
-                &mut qmp,
-                self.get_qom_path(),
-                rsvd_offset,
-                size_from_donor,
-            )
+            qmp.cxl_add_dynamic_capacity(self.get_qom_path(), rsvd_offset, size_from_donor)
         };
         if let Err(e) = result {
             Vm::return_eph_memory_from_consumer(&rsvd_alloc);
