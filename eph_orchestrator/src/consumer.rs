@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::{EphAllocation, Vm, qmp};
+use crate::{EphAllocation, Vm, VmList, donor, qmp};
 use serde::{Deserialize, Serialize};
 use vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
 
@@ -90,6 +90,63 @@ impl ConsumerState {
             }
         }
         Ok(None)
+    }
+
+    pub fn handle_eph_mem_request(&self, vms: &VmList, size: u64) -> std::io::Result<()> {
+        // Make sure the size is EPH_MEM_DONATION_GRANULARITY aligned
+        let Some(size) = size.checked_next_multiple_of(crate::EPH_MEM_DONATION_GRANULARITY) else {
+            return Err(std::io::Error::other(
+                "Requested size is too large to align to donation granularity",
+            ));
+        };
+
+        let Some(rsvd_alloc) = self.reserve_memory(size) else {
+            // TODO: Replace this with a harmless message to the consumer that
+            // its request will not be satisfied.
+            return Err(std::io::Error::other(
+                "Consumer VM has no space available for the requested allocation",
+            ));
+        };
+
+        if !donor::DonorState::allocate_eph_memory(vms, &rsvd_alloc) {
+            self.release_reserved_memory(rsvd_alloc.consumer_offset);
+            // TODO: If we could not allocate memory from any donor, return the
+            // reserved allocation to the consumer and return an error.
+            return Err(std::io::Error::other(
+                "No donor VM could satisfy the requested allocation",
+            ));
+        };
+
+        let rsvd_offset = rsvd_alloc.consumer_offset;
+        let size_from_donor = rsvd_alloc.size();
+
+        // Now we can send a QMP event to the consumer VM with the details of
+        // the allocation. The lock is scoped to this block so it is released
+        // before return_eph_memory_from_consumer locks a different Vm's QMP
+        // mutex below; a MutexGuard created directly in an `if let` condition
+        // is held for the entire consequent body, not just the condition.
+        let result = {
+            let consumer_vm = self.vm();
+            let mut qmp = consumer_vm.qmp.lock().unwrap();
+            qmp::cxl_add_dynamic_capacity(
+                &mut qmp,
+                self.get_qom_path(),
+                rsvd_offset,
+                size_from_donor,
+            )
+        };
+        if let Err(e) = result {
+            Vm::return_eph_memory_from_consumer(&rsvd_alloc);
+            return Err(std::io::Error::other(format!(
+                "Failed to add dynamic capacity: {}",
+                e
+            )));
+        }
+
+        // TODO: Wait for CXL_ADD_DYNAMIC_CAPACITY_RESPONSE to send notification
+        // to the consumer guest over the vsock connection.
+
+        Ok(())
     }
 
     /// Returns the `Vm` that owns this consumer state. Since a `ConsumerState`
@@ -387,7 +444,14 @@ fn consumer_cmd_dispatacher(
     match cmd.function.as_str() {
         "eph-mem-request" => {
             if let Some(size) = cmd.size {
-                consumer.clone().handle_eph_mem_request(vms, size)?;
+                // Unwrap is safe because consumer_cmd_dispatcher() is only
+                // called from consumer_thread(), which only operates on
+                // consumer VMs.
+                consumer
+                    .consumer
+                    .as_ref()
+                    .unwrap()
+                    .handle_eph_mem_request(vms, size)?;
             } else {
                 eprintln!(
                     "Allocate command from consumer VM at '{}' missing size argument",

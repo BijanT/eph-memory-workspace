@@ -40,79 +40,7 @@ struct Vm {
     consumer: Option<ConsumerState>,
 }
 
-// I would like to implement these functions inside DonorState or ConsumerState
-// where appropriate, but I need access to the QMP connection to send commands.
 impl Vm {
-    pub fn handle_eph_mem_request(self: Arc<Self>, vms: &VmList, size: u64) -> std::io::Result<()> {
-        // Make sure the size is EPH_MEM_DONATION_GRANULARITY aligned
-        let Some(size) = size.checked_next_multiple_of(crate::EPH_MEM_DONATION_GRANULARITY) else {
-            return Err(std::io::Error::other(
-                "Requested size is too large to align to donation granularity",
-            ));
-        };
-        let Some(consumer_state) = &self.consumer else {
-            return Err(std::io::Error::other("VM is not a consumer"));
-        };
-
-        let Some(rsvd_alloc) = consumer_state.reserve_memory(size) else {
-            // TODO: Replace this with a harmless message to the consumer that
-            // its request will not be satisfied.
-            return Err(std::io::Error::other(
-                "Consumer VM has no space available for the requested allocation",
-            ));
-        };
-
-        if !donor::DonorState::allocate_eph_memory(vms, &rsvd_alloc) {
-            consumer_state.release_reserved_memory(rsvd_alloc.consumer_offset);
-            // TODO: If we could not allocate memory from any donor, return the
-            // reserved allocation to the consumer and return an error.
-            return Err(std::io::Error::other(
-                "No donor VM could satisfy the requested allocation",
-            ));
-        };
-
-        let rsvd_offset = rsvd_alloc.consumer_offset;
-        let size_from_donor = rsvd_alloc.size();
-
-        // Now we can send a QMP event to the consumer VM with the details of
-        // the allocation. The lock is scoped to this block so it is released
-        // before return_eph_memory_from_consumer locks a different Vm's QMP
-        // mutex below; a MutexGuard created directly in an `if let` condition
-        // is held for the entire consequent body, not just the condition.
-        let result = {
-            let mut qmp = self.qmp.lock().unwrap();
-            qmp::cxl_add_dynamic_capacity(
-                &mut qmp,
-                consumer_state.get_qom_path(),
-                rsvd_offset,
-                size_from_donor,
-            )
-        };
-        if let Err(e) = result {
-            Self::return_eph_memory_from_consumer(&rsvd_alloc);
-            return Err(std::io::Error::other(format!(
-                "Failed to add dynamic capacity: {}",
-                e
-            )));
-        }
-
-        // TODO: Wait for CXL_ADD_DYNAMIC_CAPACITY_RESPONSE to send notification
-        // to the consumer guest over the vsock connection.
-
-        Ok(())
-    }
-
-    pub fn return_eph_memory(&self, qom_path: &str, size: u64) {
-        if self.donor.is_none() {
-            eprintln!("VM is not a donor, cannot return memory");
-            return;
-        }
-        let mut qmp = self.qmp.lock().unwrap();
-        if let Err(e) = qmp::eph_mem_return_capacity(&mut qmp, qom_path, size) {
-            eprintln!("Failed to return memory to donor: {}", e);
-        }
-    }
-
     // Return ephemeral memory from a consumer VM that has been committed back
     // to the donor VM. Does the necessary bookkeeping in both the consumer and donor state.
     pub fn return_eph_memory_from_consumer(alloc: &Arc<EphAllocation>) {
@@ -129,11 +57,7 @@ impl Vm {
             && donor.donor.is_some()
         {
             let donor_state = donor.donor.as_ref().unwrap();
-            if let Err(e) =
-                qmp::eph_mem_return_capacity(&mut donor.qmp.lock().unwrap(), &donor_qom_path, size)
-            {
-                eprintln!("Failed to return memory to donor: {}", e);
-            } else {
+            if donor_state.return_eph_memory(&donor_qom_path, size).is_ok() {
                 donor_state.bookkeep_returned_eph_memory(&donor_qom_path, alloc_id);
             }
         }

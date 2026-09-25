@@ -205,7 +205,7 @@ impl DonorState {
             // between we were granted memory from the donor and the call to
             // handle_reserved_alloc().
             if to_revoke > 0 {
-                donor_vm.return_eph_memory(&qom_path, to_revoke);
+                let _ = donor_state.return_eph_memory(&qom_path, to_revoke);
             }
             if granted_size != 0 {
                 rsvd_alloc.commit_allocation(Arc::downgrade(&donor_vm), qom_path, granted_size);
@@ -214,6 +214,13 @@ impl DonorState {
             // Otherwise try the next donor in the list.
             last_path = donor_vm.qmp_socket_path.clone();
         }
+    }
+
+    pub fn return_eph_memory(&self, qom_path: &str, size: u64) -> std::io::Result<()> {
+        let donor_vm = self.vm();
+        let mut qmp = donor_vm.qmp.lock().unwrap();
+        qmp::eph_mem_return_capacity(&mut qmp, qom_path, size)
+            .inspect_err(|e| eprintln!("QMP error while returning eph memory: {}", e))
     }
 
     pub fn bookkeep_returned_eph_memory(&self, donor_qom_path: &str, alloc_id: u64) {
