@@ -72,12 +72,16 @@ fn handle_event(
         }
         "CXL_RELEASE_DYNAMIC_CAPACITY" => {
             let data: types::CxlAddReleaseCapacityEventData = parse_event_data(event_data)?;
-            println!(
-                "Received {} event from VM at '{}': {:?}",
-                event_name,
-                vm_path.display(),
-                data
-            );
+            let Some(consumer) = Vm::get_consumer(vms, vm_path) else {
+                eprintln!("{}: Consumer VM not found for path: {:?}", event_name, data);
+                return Ok(());
+            };
+
+            consumer
+                .consumer
+                .as_ref()
+                .unwrap()
+                .signal_release_dc(&data.extents);
         }
         "EPH_MEM_REVOKE" => {
             let data: types::EphMemRevokeEventData = parse_event_data(event_data)?;

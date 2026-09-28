@@ -52,7 +52,14 @@ impl Vm {
         let consumer_offset = alloc.consumer_offset;
         let alloc_id = alloc.id;
 
-        // If the donor VM is gone, we can just skip the returning the memory
+        // If the consumer VM is gone, we can just skip the bookkeeping.
+        if let Some(consumer) = consumer
+            && consumer.consumer.is_some()
+        {
+            let consumer_state = consumer.consumer.as_ref().unwrap();
+            let _ = consumer_state.release_reserved_memory(consumer_offset);
+        }
+        // Ditto for the donor VM: if it's gone, we can just skip the returning the memory
         if let Some(donor) = donor
             && donor.donor.is_some()
         {
@@ -60,13 +67,6 @@ impl Vm {
             if donor_state.return_eph_memory(&donor_qom_path, size).is_ok() {
                 donor_state.bookkeep_returned_eph_memory(&donor_qom_path, alloc_id);
             }
-        }
-        // Ditto for the consumer VM; if it's gone, we can just skip the bookkeeping.
-        if let Some(consumer) = consumer
-            && consumer.consumer.is_some()
-        {
-            let consumer_state = consumer.consumer.as_ref().unwrap();
-            consumer_state.release_reserved_memory(consumer_offset);
         }
     }
 

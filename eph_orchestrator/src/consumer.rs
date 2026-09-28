@@ -22,6 +22,8 @@ pub struct ConsumerState {
     mut_state: Mutex<ConsumerMutState>,
     /* Condition variable for signaling a CXL add DC event */
     add_dc_cond: Condvar,
+    /* Condition variable for signaling a CXL release DC event */
+    release_dc_cond: Condvar,
 }
 
 struct ConsumerMutState {
@@ -87,6 +89,7 @@ impl ConsumerState {
                         allocated_areas: BTreeMap::new(),
                     }),
                     add_dc_cond: Condvar::new(),
+                    release_dc_cond: Condvar::new(),
                 };
                 return Ok(Some(consumer_state));
             }
@@ -111,7 +114,7 @@ impl ConsumerState {
         };
 
         if !donor::DonorState::allocate_eph_memory(vms, &rsvd_alloc) {
-            self.release_reserved_memory(rsvd_alloc.consumer_offset);
+            let _ = self.release_reserved_memory(rsvd_alloc.consumer_offset);
             // TODO: If we could not allocate memory from any donor, return the
             // reserved allocation to the consumer and return an error.
             return Err(std::io::Error::other(
@@ -255,22 +258,80 @@ impl ConsumerState {
     }
 
     /// Release reserved memory that was not successfully allocated.
-    pub fn release_reserved_memory(&self, offset: u64) {
-        let mut mut_state = self.mut_state.lock().unwrap();
-        if mut_state.allocated_areas.remove(&offset).is_none() {
-            eprintln!(
-                "No reserved allocation found at offset {} for consumer VM with CID {}",
-                offset, self.vsock_cid
+    pub fn release_reserved_memory(&self, offset: u64) -> std::io::Result<()> {
+        let mut ret_val: std::io::Result<()> = Ok(());
+        let mut_state = self.mut_state.lock().unwrap();
+        let Some(allocation) = mut_state.allocated_areas.get(&offset).cloned() else {
+            let err = std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("No reserved allocation found at {}", offset),
             );
+            eprintln!("{}", err);
+            return Err(err);
+        };
+        drop(mut_state);
+
+        let manual_remove = if allocation.dcd_set.get().is_some() {
+            let vm = self.vm();
+            let mut qmp = vm.qmp.lock().unwrap();
+            if let Err(e) =
+                qmp.cxl_release_dynamic_capacity(&self.qom_path, offset, allocation.size())
+            {
+                let err = std::io::Error::other(format!(
+                    "Failed to release dynamic capacity at CID {} for {}:{}: {}",
+                    self.vsock_cid,
+                    offset,
+                    allocation.size(),
+                    e
+                ));
+                eprintln!("{}", err);
+                ret_val = Err(err);
+            }
+            drop(qmp);
+
+            if ret_val.is_err() {
+                // There was a previous error, so just remove it manually
+                true
+            } else if !self.wait_for_release_dc(&allocation, crate::QMP_WAIT_TIMEOUT_MS) {
+                // A timeout means that we can't revoke the consumer's ephemeral
+                // memory. This is very unlikely to happen in our use case, so we
+                // will just log an error for now and manual remove the allocation.
+                // We will revisit this if it becomes an issue later.
+                let err = std::io::Error::other(format!(
+                    "Timeout waiting for release of dynamic capacity at CID {} for {}:{}",
+                    self.vsock_cid,
+                    offset,
+                    allocation.size()
+                ));
+                eprintln!("{}", err);
+                ret_val = Err(err);
+                // We timed out, so just manually remove the allocation from
+                // list of allocated areas.
+                true
+            } else {
+                // The allocation was removed by via the event handler
+                false
+            }
+        } else {
+            // The allocation never made it to the DCD, so remove it manually
+            true
+        };
+
+        if manual_remove {
+            let mut mut_state = self.mut_state.lock().unwrap();
+            mut_state.allocated_areas.remove(&offset);
         }
+
+        ret_val
     }
 
     pub fn signal_add_dc(&self, extents: &Vec<qmp::types::CxlDynamicCapacityExtent>) {
-        let mut_state = self.mut_state.lock().unwrap();
         let mut notify = false;
+        let vm = self.vm();
 
         // See if the added extents match any of the currently allocated areas.
         for extent in extents {
+            let mut_state = self.mut_state.lock().unwrap();
             if let Some(allocation) = mut_state.allocated_areas.get(&extent.offset)
                 && allocation.size() == extent.len
             {
@@ -284,15 +345,54 @@ impl ConsumerState {
                     );
                 }
                 notify = true;
+            } else {
+                // If no allocation was found at extent.offset, we should send
+                // a remove dynamic capacity command to the consumer. We don't
+                // want the consumer to have any unaccounted-for dynamic capacity.
+                drop(mut_state);
+                eprintln!(
+                    "CXL Add DC event at CID {} for {}:{} that has no matching allocation",
+                    self.vsock_cid, extent.offset, extent.len,
+                );
+
+                let mut qmp = vm.qmp.lock().unwrap();
+                if let Err(e) =
+                    qmp.cxl_release_dynamic_capacity(&self.qom_path, extent.offset, extent.len)
+                {
+                    eprintln!(
+                        "Failed to release dynamic capacity at CID {} for {}:{}: {}",
+                        self.vsock_cid, extent.offset, extent.len, e
+                    );
+                }
             }
-            // TODO: if no allocation was found at extent.offset, we should
-            // send a remove dynamic capacity command to the consumer. We
-            // don't want the consumer to have any unaccounted-for dynamic capacity.
         }
 
-        drop(mut_state);
         if notify {
             self.add_dc_cond.notify_all();
+        }
+    }
+
+    pub fn signal_release_dc(&self, extents: &Vec<qmp::types::CxlDynamicCapacityExtent>) {
+        let mut mut_state = self.mut_state.lock().unwrap();
+        let mut notify = false;
+
+        for extent in extents {
+            if let Some(allocation) = mut_state.allocated_areas.get(&extent.offset)
+                && allocation.size() == extent.len
+            {
+                // Mark that this allocation has been released from the DCD
+                mut_state.allocated_areas.remove(&extent.offset);
+                notify = true;
+            } else {
+                eprintln!(
+                    "CXL Release DC event at CID {} for {}:{} that has no matching allocation",
+                    self.vsock_cid, extent.offset, extent.len,
+                );
+            }
+        }
+
+        if notify {
+            self.release_dc_cond.notify_all();
         }
     }
 
@@ -303,6 +403,22 @@ impl ConsumerState {
         let (_unused, wait_result) = self
             .add_dc_cond
             .wait_timeout_while(mut_state, timeout, |_| allocation.dcd_set.get().is_none())
+            .unwrap();
+
+        !wait_result.timed_out()
+    }
+
+    fn wait_for_release_dc(&self, allocation: &EphAllocation, timeout_ms: u64) -> bool {
+        let mut_state = self.mut_state.lock().unwrap();
+        let timeout = Duration::from_millis(timeout_ms);
+
+        let (_unused, wait_result) = self
+            .release_dc_cond
+            .wait_timeout_while(mut_state, timeout, |state| {
+                state
+                    .allocated_areas
+                    .contains_key(&allocation.consumer_offset)
+            })
             .unwrap();
 
         !wait_result.timed_out()

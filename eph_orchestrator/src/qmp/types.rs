@@ -137,7 +137,7 @@ pub struct CxlAddDynamicCapacityArgs {
     pub path: String,
     // The "host-id" of a host in a CXL pool. Not used here
     pub host_id: u16,
-    // How to select extents from the donor's memory pool. We always use "Prescriptive"
+    // How to select where to allocate the extents. We always use "Prescriptive"
     pub selection_policy: CxlExtentSelectionPolicy,
     // The region number to use for allocation. We always use 0.
     pub region: u8,
@@ -145,6 +145,38 @@ pub struct CxlAddDynamicCapacityArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     // The extents to add to the DCD device.
+    pub extents: Vec<CxlDynamicCapacityExtent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CxlExtentRemovalPolicy {
+    TagBased,
+    // The only one we actually use. Keep the rest for completeness.
+    Prescriptive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CxlReleaseDynamicCapacityArgs {
+    // Path to the DCD device to release capacity from
+    pub path: String,
+    // The "host-id" of a host in a CXL pool. Not used here
+    pub host_id: u16,
+    // How to remove extents from the DCD device. We always use "Prescriptive"
+    pub selection_policy: CxlExtentRemovalPolicy,
+    // If the extent should be forcefully removed. Always true for us
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forced_removal: Option<bool>,
+    // Whether to sanatize the data on release. We don't use
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sanitize_on_release: Option<bool>,
+    // The region number to use for release. We always use 0.
+    pub region: u8,
+    // The tag to remove. Not used here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    // The extents to remove from the DCD device.
     pub extents: Vec<CxlDynamicCapacityExtent>,
 }
 
