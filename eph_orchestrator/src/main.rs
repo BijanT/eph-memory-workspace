@@ -85,6 +85,9 @@ struct EphAllocation {
     // The donor backing this allocation. Set exactly once, when a donor is
     // found and confirms the allocation.
     donor: OnceLock<DonorAllocation>,
+    // If set, the allocation has been successfully assigned to the consumer's
+    // DCD device
+    dcd_set: OnceLock<()>,
 }
 
 struct DonorAllocation {
@@ -107,6 +110,7 @@ impl EphAllocation {
             consumer_vm,
             id: ALLOC_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             donor: OnceLock::new(),
+            dcd_set: OnceLock::new(),
         }
     }
 

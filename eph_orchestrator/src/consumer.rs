@@ -135,6 +135,10 @@ impl ConsumerState {
                 e
             )));
         }
+        rsvd_alloc
+            .dcd_set
+            .set(())
+            .expect("EphAllocation's dcd_set should only be set once");
 
         // TODO: Wait for CXL_ADD_DYNAMIC_CAPACITY_RESPONSE to send notification
         // to the consumer guest over the vsock connection.
