@@ -4,7 +4,7 @@ mod qmp;
 mod vm_detection;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak, mpsc};
 use std::thread;
@@ -13,6 +13,7 @@ use consumer::ConsumerState;
 use donor::DonorState;
 
 const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
+const QMP_WAIT_TIMEOUT_MS: u64 = 1000;
 const QMP_DIRECTORY: &str = "/tmp/ephmem/";
 const VSOCK_PORT: u32 = 1848;
 
@@ -67,6 +68,18 @@ impl Vm {
             let consumer_state = consumer.consumer.as_ref().unwrap();
             consumer_state.release_reserved_memory(consumer_offset);
         }
+    }
+
+    /// Returns the Vm at the specified path, if it exists and is a consumer VM.
+    pub fn get_consumer(vms: &VmList, path: &Path) -> Option<Arc<Vm>> {
+        let vms = vms.read().unwrap();
+        vms.get(path).and_then(|vm| {
+            if vm.consumer.is_some() {
+                Some(vm.clone())
+            } else {
+                None
+            }
+        })
     }
 }
 

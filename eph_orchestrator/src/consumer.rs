@@ -2,7 +2,8 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::Duration;
 
 use crate::{EphAllocation, Vm, VmList, donor, qmp};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,8 @@ pub struct ConsumerState {
     size: u64,
     /* Mutable state for the consumer VM protected by a mutex */
     mut_state: Mutex<ConsumerMutState>,
+    /* Condition variable for signaling a CXL add DC event */
+    add_dc_cond: Condvar,
 }
 
 struct ConsumerMutState {
@@ -83,6 +86,7 @@ impl ConsumerState {
                         vsock_conn: None,
                         allocated_areas: BTreeMap::new(),
                     }),
+                    add_dc_cond: Condvar::new(),
                 };
                 return Ok(Some(consumer_state));
             }
@@ -135,13 +139,19 @@ impl ConsumerState {
                 e
             )));
         }
-        rsvd_alloc
-            .dcd_set
-            .set(())
-            .expect("EphAllocation's dcd_set should only be set once");
 
-        // TODO: Wait for CXL_ADD_DYNAMIC_CAPACITY_RESPONSE to send notification
-        // to the consumer guest over the vsock connection.
+        // Wait for the confirmation from the consumer that the dynamic capacity
+        // has been added.
+        // 1000ms should be plenty of time to for the consumer to process the
+        // dynamic capacity addition.
+        if !self.wait_for_add_dc(&rsvd_alloc, crate::QMP_WAIT_TIMEOUT_MS) {
+            Vm::return_eph_memory_from_consumer(&rsvd_alloc);
+            return Err(std::io::Error::other(
+                "Timed out waiting for dynamic capacity addition confirmation",
+            ));
+        }
+        // TODO: Send message to the consumer guest over the vsock connection
+        // to notify it that the dynamic capacity has been added.
 
         Ok(())
     }
@@ -255,6 +265,49 @@ impl ConsumerState {
         }
     }
 
+    pub fn signal_add_dc(&self, extents: &Vec<qmp::types::CxlDynamicCapacityExtent>) {
+        let mut_state = self.mut_state.lock().unwrap();
+        let mut notify = false;
+
+        // See if the added extents match any of the currently allocated areas.
+        for extent in extents {
+            if let Some(allocation) = mut_state.allocated_areas.get(&extent.offset)
+                && allocation.size() == extent.len
+            {
+                // Mark that this allocation has been added to the DCD
+                if allocation.dcd_set.set(()).is_err() {
+                    eprintln!(
+                        "CXL Add DC event at CID {} for {}:{} that has already been added",
+                        self.vsock_cid,
+                        allocation.consumer_offset,
+                        allocation.size()
+                    );
+                }
+                notify = true;
+            }
+            // TODO: if no allocation was found at extent.offset, we should
+            // send a remove dynamic capacity command to the consumer. We
+            // don't want the consumer to have any unaccounted-for dynamic capacity.
+        }
+
+        drop(mut_state);
+        if notify {
+            self.add_dc_cond.notify_all();
+        }
+    }
+
+    fn wait_for_add_dc(&self, allocation: &EphAllocation, timeout_ms: u64) -> bool {
+        let mut_state = self.mut_state.lock().unwrap();
+        let timeout = Duration::from_millis(timeout_ms);
+
+        let (_unused, wait_result) = self
+            .add_dc_cond
+            .wait_timeout_while(mut_state, timeout, |_| allocation.dcd_set.get().is_none())
+            .unwrap();
+
+        !wait_result.timed_out()
+    }
+
     pub fn get_qom_path(&self) -> &str {
         &self.qom_path
     }
@@ -313,41 +366,38 @@ pub fn consumer_listener_thread(
         let qmp_path = format!("{}/{}.qmp", qmp_path, addr.cid());
 
         // Find the VM corresponding to the CID of the connecting consumer VM.
-        let Some(consumer) = vms.read().unwrap().get(&PathBuf::from(&qmp_path)).cloned() else {
+        let Some(consumer) = Vm::get_consumer(&vms, &PathBuf::from(&qmp_path)) else {
             eprintln!(
                 "No VM found for consumer connection from CID {}. Closing connection.",
                 addr.cid()
             );
             continue;
         };
+        // Unwrap is safe because Vm::get_consumer ensures that consumer is Some.
+        let consumer_state = consumer.consumer.as_ref().unwrap();
 
-        if let Some(consumer_state) = &consumer.consumer {
-            let mut state = consumer_state.mut_state.lock().unwrap();
-            // Check if the consumer VM already has a connection.
-            if state.vsock_conn.is_some() {
-                eprintln!(
-                    "Consumer VM with CID {} already has a connection. Closing new connection.",
-                    addr.cid()
-                );
-                continue;
-            }
-            // Set the vsock connection for the consumer VM.
-            if let Ok(stream_clone) = stream.try_clone() {
-                state.vsock_conn = Some(stream_clone);
-            } else {
-                eprintln!(
-                    "Failed to clone VsockStream for consumer VM with CID {}. Closing connection.",
-                    addr.cid()
-                );
-                continue;
-            }
-        } else {
+        let mut state = consumer_state.mut_state.lock().unwrap();
+        // Check if the consumer VM already has a connection.
+        if state.vsock_conn.is_some() {
             eprintln!(
-                "Consumer state not found for VM with CID {}. Closing connection.",
+                "Consumer VM with CID {} already has a connection. Closing new connection.",
                 addr.cid()
             );
             continue;
         }
+        // Set the vsock connection for the consumer VM.
+        if let Ok(stream_clone) = stream.try_clone() {
+            state.vsock_conn = Some(stream_clone);
+        } else {
+            eprintln!(
+                "Failed to clone VsockStream for consumer VM with CID {}. Closing connection.",
+                addr.cid()
+            );
+            continue;
+        }
+        // We need to drop the state to satisfy the borrow checker before
+        // spawning the thread.
+        drop(state);
 
         let vms_clone = vms.clone();
         std::thread::spawn(move || {

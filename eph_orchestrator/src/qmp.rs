@@ -1,7 +1,7 @@
 //! Helper functions for interacting with QEMU's QMP (QEMU Machine Protocol)
 //! interface.
 pub mod events;
-mod types;
+pub mod types;
 
 use serde::de::DeserializeOwned;
 use std::io::{BufRead, BufReader, Write};

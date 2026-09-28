@@ -5,6 +5,7 @@ use std::sync::mpsc;
 
 use serde::Deserialize;
 
+use crate::Vm;
 use crate::qmp::types;
 
 pub struct QmpEvent {
@@ -48,13 +49,28 @@ fn parse_event_data<'de, T: Deserialize<'de>>(
 }
 
 fn handle_event(
-    _vms: &crate::VmList,
+    vms: &crate::VmList,
     vm_path: &Path,
     event_name: &str,
     event_data: &serde_json::Value,
 ) -> Result<(), std::io::Error> {
     match event_name {
-        "CXL_ADD_DYNAMIC_CAPACITY_RESPONSE" | "CXL_RELEASE_DYNAMIC_CAPACITY" => {
+        "CXL_ADD_DYNAMIC_CAPACITY_RESPONSE" => {
+            let data: types::CxlAddReleaseCapacityEventData = parse_event_data(event_data)?;
+            let Some(consumer) = Vm::get_consumer(vms, vm_path) else {
+                eprintln!("{}: Consumer VM not found for path: {:?}", event_name, data);
+                return Ok(());
+            };
+
+            // Vm::get_consumer() guarantees that `consumer` is Some, so unwrap
+            // is safe here.
+            consumer
+                .consumer
+                .as_ref()
+                .unwrap()
+                .signal_add_dc(&data.extents);
+        }
+        "CXL_RELEASE_DYNAMIC_CAPACITY" => {
             let data: types::CxlAddReleaseCapacityEventData = parse_event_data(event_data)?;
             println!(
                 "Received {} event from VM at '{}': {:?}",

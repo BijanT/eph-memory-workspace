@@ -115,9 +115,9 @@ pub struct CxlDynamicCapacityExtent {
 #[serde(rename_all = "kebab-case")]
 pub struct CxlAddReleaseCapacityEventData {
     // Path to the DCD device triggering this event in the QOM
-    path: String,
+    pub path: String,
     // Extents added/removed from the DCD device
-    extents: Vec<CxlDynamicCapacityExtent>,
+    pub extents: Vec<CxlDynamicCapacityExtent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
