@@ -184,11 +184,11 @@ pub struct CxlReleaseDynamicCapacityArgs {
 #[serde(rename_all = "kebab-case")]
 pub struct EphMemRevokeEventData {
     // Path to the DCD device triggering this event in the QOM
-    path: String,
+    pub path: String,
     // The amount of memory requested to be revoked
-    size: u64,
+    pub size: u64,
     // The ID to tie this event to returned memory. Not currently used.
-    id: i32,
+    pub id: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

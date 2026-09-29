@@ -20,6 +20,13 @@ struct DonorMutState {
 }
 
 impl DonorMutState {
+    /// Finds the donatable region matching `qom_path`.
+    fn find_region(&mut self, qom_path: &str) -> Option<&mut DonatableRegion> {
+        self.donatable_regions
+            .iter_mut()
+            .find(|region| region.path == qom_path)
+    }
+
     /// Finds the donatable region matching `qom_path`, and the index within
     /// it of the allocation matching `alloc_id`.
     fn find_alloc(
@@ -27,13 +34,10 @@ impl DonorMutState {
         qom_path: &str,
         alloc_id: u64,
     ) -> Option<(&mut DonatableRegion, usize)> {
-        self.donatable_regions
-            .iter_mut()
-            .find(|region| region.path == qom_path)
-            .and_then(|region| {
-                let pos = region.allocations.iter().position(|a| a.id == alloc_id)?;
-                Some((region, pos))
-            })
+        self.find_region(qom_path).and_then(|region| {
+            let pos = region.allocations.iter().position(|a| a.id == alloc_id)?;
+            Some((region, pos))
+        })
     }
 }
 
@@ -260,6 +264,52 @@ impl DonorState {
             region.donated -= size;
         }
         region.allocations.remove(i);
+    }
+
+    /// Revoke `revoke_size` bytes of ephemeral memory owned by the donor VM
+    /// device at `qom_path`.
+    pub fn revoke_eph_memory(&self, qom_path: &str, revoke_size: u64) -> std::io::Result<()> {
+        // First find the allocations to revoke that will satisfy the revocation
+        // request. If there are not enough committed allocations to satisfy the
+        // request, that may mean there are some allocations that have received
+        // memory from the donor, but have not yet committed in. In that case,
+        // set the revoked_owed amount accordingly.
+        let allocs_to_revoke = {
+            let mut donor_mut_state = self.mut_state.lock().unwrap();
+            let mut allocs_to_revoke = Vec::new();
+            let mut remaining_revoke_size = revoke_size;
+            let Some(region) = donor_mut_state.find_region(qom_path) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "Donatable region {} not found in donor {:?}",
+                        qom_path,
+                        self.vm().qmp_socket_path
+                    ),
+                ));
+            };
+
+            // There are many possibly fancy policies for selecting which
+            // allocations to revoke. For now, we will just revoke the most
+            // recent committed allocations first.
+            for alloc in region.allocations.iter().rev() {
+                if remaining_revoke_size == 0 {
+                    break;
+                }
+                if alloc.try_claim_for_revoke() {
+                    remaining_revoke_size = remaining_revoke_size.saturating_sub(alloc.size());
+                    allocs_to_revoke.push(alloc.clone());
+                }
+            }
+
+            region.revoked_owed += remaining_revoke_size;
+            allocs_to_revoke
+        };
+
+        for alloc in allocs_to_revoke {
+            Vm::return_eph_memory_from_consumer(&alloc);
+        }
+        Ok(())
     }
 
     pub fn release_all_allocations(&self) {

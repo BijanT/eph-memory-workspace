@@ -89,6 +89,18 @@ impl Vm {
         })
     }
 
+    /// Returns the Vm at the specified path, if it exists and is a donor VM.
+    pub fn get_donor(vms: &VmList, path: &Path) -> Option<Arc<Vm>> {
+        let vms = vms.read().unwrap();
+        vms.get(path).and_then(|vm| {
+            if vm.donor.is_some() {
+                Some(vm.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn remove_vms(vms: &VmList, paths: &[PathBuf]) {
         let removed_vms: Vec<Arc<Vm>> = {
             let mut vms = vms.write().unwrap();
@@ -129,15 +141,9 @@ struct EphAllocation {
     id: u64,
     // The current state of this allocation
     state: Mutex<AllocState>,
-    // The actual size granted by the donor, which may be less than
-    // `initial_size`. Set exactly once, whenever commit_allocation() is
-    // called -- regardless of whether the allocation was already abandoned
-    // by that point -- since it's a historical fact about what the donor
-    // granted, independent of whether the consumer ended up keeping the
-    // allocation. Kept in its own OnceLock rather than inside
-    // `AllocState::Committed` so that `size()` keeps returning the correct
-    // value even after `state` moves on to `Abandoned`.
-    final_size: OnceLock<u64>,
+    // The donor backing this allocation. Set exactly once, when a donor is
+    // found and confirms its allocation.
+    donor_info: OnceLock<DonorAllocation>,
     // If set, the allocation has been successfully assigned to the consumer's
     // DCD device
     dcd_set: OnceLock<()>,
@@ -148,9 +154,12 @@ struct EphAllocation {
 
 enum AllocState {
     // Allocation is still waiting for a donor.
-    Pending,
+    PendingCommit,
     // Allocation has been committed to a specific donor.
-    Committed(DonorAllocation),
+    Committed,
+    // A revoke has claimed this allocation and is in the process of
+    // returning it to the donor.
+    PendingRelease,
     // Allocation has been abandoned by the consumer.
     Abandoned,
 }
@@ -161,6 +170,9 @@ struct DonorAllocation {
     donor_vm: Weak<Vm>,
     // The QOM path to the memory device on the donor this allocation is from.
     donor_qom_path: String,
+    // The actual size granted by the donor, which may be less than
+    // `EphAllocation::initial_size`.
+    final_size: u64,
 }
 
 static ALLOC_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -171,8 +183,8 @@ impl EphAllocation {
             consumer_offset,
             consumer_vm,
             id: ALLOC_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
-            state: Mutex::new(AllocState::Pending),
-            final_size: OnceLock::new(),
+            state: Mutex::new(AllocState::PendingCommit),
+            donor_info: OnceLock::new(),
             dcd_set: OnceLock::new(),
             release_requested: OnceLock::new(),
         }
@@ -191,49 +203,70 @@ impl EphAllocation {
         donor_qom_path: String,
         final_size: u64,
     ) -> bool {
-        self.final_size
-            .set(final_size)
-            .expect("EphAllocation's final_size should only be set once");
+        self.donor_info
+            .set(DonorAllocation {
+                donor_vm,
+                donor_qom_path,
+                final_size,
+            })
+            .ok()
+            .expect("EphAllocation's donor_info should only be set once");
         let mut state = self.state.lock().unwrap();
         match &*state {
-            AllocState::Pending => {
-                *state = AllocState::Committed(DonorAllocation {
-                    donor_vm,
-                    donor_qom_path,
-                });
+            AllocState::PendingCommit => {
+                *state = AllocState::Committed;
                 true
             }
             AllocState::Abandoned => false,
-            AllocState::Committed(_) => {
+            AllocState::Committed | AllocState::PendingRelease => {
                 panic!("EphAllocation's donor should only be committed once")
             }
         }
     }
 
-    // Marks this allocation as abandoned by the consumer. If a donor had
-    // already committed to it, returns that donor's info so the caller can
-    // return its memory; otherwise returns None, since commit_allocation()
-    // will notice the abandonment itself and return the memory if a donor
-    // commits to this allocation later.
-    fn abandon_or_take_donor(&self) -> Option<DonorAllocation> {
+    // Atomically claims this allocation for revocation if it is currently
+    // Committed, transitioning it to PendingRelease. Returns true if this
+    // call won the claim; a concurrent second caller (e.g. another
+    // in-flight revoke_eph_memory() for the same region) finds it already
+    // claimed and gets false, so at most one caller ever revokes a given
+    // allocation.
+    pub fn try_claim_for_revoke(&self) -> bool {
         let mut state = self.state.lock().unwrap();
-        match std::mem::replace(&mut *state, AllocState::Abandoned) {
-            AllocState::Committed(donor) => Some(donor),
-            AllocState::Pending | AllocState::Abandoned => None,
+        if matches!(*state, AllocState::Committed) {
+            *state = AllocState::PendingRelease;
+            true
+        } else {
+            false
+        }
+    }
+
+    // Marks this allocation as abandoned. If a donor had already committed
+    // to it (or a revoke had already claimed it for release), returns that
+    // donor's info so the caller can return its memory; otherwise returns
+    // None, since commit_allocation() will notice the abandonment itself
+    // and return the memory if a donor commits to this allocation later.
+    fn abandon_or_take_donor(&self) -> Option<&DonorAllocation> {
+        let mut state = self.state.lock().unwrap();
+        match *state {
+            AllocState::Committed | AllocState::PendingRelease => {
+                *state = AllocState::Abandoned;
+                self.donor_info.get()
+            }
+            AllocState::PendingCommit | AllocState::Abandoned => None,
         }
     }
 
     // The best currently-known size of the allocation: the donor's granted
     // size once a donor has confirmed, otherwise the originally requested size.
-    // Reads `final_size` directly rather than through `state`, so this stays
-    // correct even after `state` moves on to `Abandoned`.
     pub fn size(&self) -> u64 {
-        self.final_size.get().copied().unwrap_or(self.initial_size)
+        self.donor_info
+            .get()
+            .map_or(self.initial_size, |d| d.final_size)
     }
 
     pub fn is_committed(&self) -> bool {
         let state = self.state.lock().unwrap();
-        matches!(*state, AllocState::Committed(_))
+        matches!(*state, AllocState::Committed)
     }
 
     pub fn is_release_requested(&self) -> bool {

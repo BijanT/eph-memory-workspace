@@ -26,9 +26,6 @@ pub fn qmp_event_handler_thread(
         };
         let event_data = event.json.get("data").unwrap_or(&serde_json::Value::Null);
 
-        // Might want to spawn a thread for each event, or even have multiple
-        // threads for handling events and add events to a queue for processing.
-        // For now, just handle them synchronously in the same thread.
         if let Err(e) = handle_event(vms, &event.vm_path, event_name, event_data) {
             eprintln!(
                 "{}: Error handling {} event: {}",
@@ -85,11 +82,25 @@ fn handle_event(
         }
         "EPH_MEM_REVOKE" => {
             let data: types::EphMemRevokeEventData = parse_event_data(event_data)?;
-            println!(
-                "Received EPH_MEM_REVOKE event from VM at '{}': {:?}",
-                vm_path.display(),
-                data
-            );
+            let Some(donor) = Vm::get_donor(vms, vm_path) else {
+                eprintln!("{}: Donor VM not found for path: {:?}", event_name, vm_path);
+                return Ok(());
+            };
+
+            // Revoking memory requires a lot of outside communication.
+            // Spawn a new thread to not block the event handling loop.
+            std::thread::spawn(move || {
+                // Unwrap is safe here because `Vm::get_donor()` guarantees that
+                // `donor` is Some.
+                if let Err(e) = donor
+                    .donor
+                    .as_ref()
+                    .unwrap()
+                    .revoke_eph_memory(&data.path, data.size)
+                {
+                    eprintln!("EPH_MEM_REVOKE: Error revoking ephemeral memory: {}", e);
+                }
+            });
         }
         _ => {
             println!(
