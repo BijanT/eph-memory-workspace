@@ -206,8 +206,18 @@ impl DonorState {
                 let _ = donor_state.return_eph_memory(&qom_path, to_revoke);
             }
             if granted_size != 0 {
-                rsvd_alloc.commit_allocation(Arc::downgrade(&donor_vm), qom_path, granted_size);
-                return true;
+                if rsvd_alloc.commit_allocation(
+                    Arc::downgrade(&donor_vm),
+                    qom_path.clone(),
+                    granted_size,
+                ) {
+                    return true;
+                }
+                // The consumer abandoned this allocation while we were
+                // negotiating with the donor. Hand the memory straight back
+                // rather than orphaning it in the donor's bookkeeping.
+                donor_state.return_and_bookkeep_eph_memory(&qom_path, alloc_id, granted_size);
+                return false;
             }
             // Otherwise try the next donor in the list.
             last_path = donor_vm.qmp_socket_path.clone();
@@ -222,6 +232,12 @@ impl DonorState {
             .unwrap()
             .eph_mem_return_capacity(qom_path, size)
             .inspect_err(|e| eprintln!("QMP error while returning eph memory: {}", e))
+    }
+
+    pub fn return_and_bookkeep_eph_memory(&self, qom_path: &str, alloc_id: u64, size: u64) {
+        if self.return_eph_memory(qom_path, size).is_ok() {
+            self.bookkeep_returned_eph_memory(qom_path, alloc_id);
+        }
     }
 
     pub fn bookkeep_returned_eph_memory(&self, donor_qom_path: &str, alloc_id: u64) {
@@ -244,6 +260,31 @@ impl DonorState {
             region.donated -= size;
         }
         region.allocations.remove(i);
+    }
+
+    pub fn release_all_allocations(&self) {
+        // Clone the EphAllocs separately, so we can call
+        // Vm::return_eph_memory_from_consumer(), which takes the donor lock
+        let allocs = {
+            let donor_mut_state = self.mut_state.lock().unwrap();
+            let mut allocs = Vec::new();
+            for region in &donor_mut_state.donatable_regions {
+                // Only get committed allocations. Uncommitted allocations are
+                // not the responsibility of this VM.
+                allocs.extend(
+                    region
+                        .allocations
+                        .iter()
+                        .filter(|a| a.is_committed())
+                        .cloned(),
+                );
+            }
+            allocs
+        };
+
+        for a in allocs {
+            Vm::return_eph_memory_from_consumer(&a);
+        }
     }
 }
 

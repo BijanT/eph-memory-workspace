@@ -262,59 +262,71 @@ impl ConsumerState {
         let mut ret_val: std::io::Result<()> = Ok(());
         let mut_state = self.mut_state.lock().unwrap();
         let Some(allocation) = mut_state.allocated_areas.get(&offset).cloned() else {
-            let err = std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("No reserved allocation found at {}", offset),
-            );
-            eprintln!("{}", err);
-            return Err(err);
+            // Not found means either a caller passed a bad offset, or --
+            // now that other callers can race to release the same
+            // allocation -- someone else already claimed and is handling
+            // it. Either way there's nothing for us to do, and every caller
+            // already discards this Result, so don't log it as an error.
+            return Ok(());
         };
         drop(mut_state);
 
-        let manual_remove = if allocation.dcd_set.get().is_some() {
-            let vm = self.vm();
-            let mut qmp = vm.qmp.lock().unwrap();
-            if let Err(e) =
-                qmp.cxl_release_dynamic_capacity(&self.qom_path, offset, allocation.size())
-            {
-                let err = std::io::Error::other(format!(
-                    "Failed to release dynamic capacity at CID {} for {}:{}: {}",
-                    self.vsock_cid,
-                    offset,
-                    allocation.size(),
-                    e
-                ));
-                eprintln!("{}", err);
-                ret_val = Err(err);
-            }
-            drop(qmp);
+        // Atomically claim responsibility for releasing this allocation
+        // exactly once, the same idiom as dcd_set: a concurrent second
+        // caller for the same allocation (e.g. this VM's own
+        // request-handling thread racing with a VM-teardown-triggered
+        // release_all_allocations) finds it already claimed and returns
+        // immediately, instead of both of them sending a redundant QMP
+        // release command.
+        if allocation.release_requested.set(()).is_err() {
+            return Ok(());
+        }
 
-            if ret_val.is_err() {
-                // There was a previous error, so just remove it manually
-                true
-            } else if !self.wait_for_release_dc(&allocation, crate::QMP_WAIT_TIMEOUT_MS) {
-                // A timeout means that we can't revoke the consumer's ephemeral
-                // memory. This is very unlikely to happen in our use case, so we
-                // will just log an error for now and manual remove the allocation.
-                // We will revisit this if it becomes an issue later.
-                let err = std::io::Error::other(format!(
-                    "Timeout waiting for release of dynamic capacity at CID {} for {}:{}",
-                    self.vsock_cid,
-                    offset,
-                    allocation.size()
-                ));
-                eprintln!("{}", err);
-                ret_val = Err(err);
-                // We timed out, so just manually remove the allocation from
-                // list of allocated areas.
-                true
-            } else {
-                // The allocation was removed by via the event handler
-                false
-            }
-        } else {
-            // The allocation never made it to the DCD, so remove it manually
+        if allocation.dcd_set.get().is_none() {
+            // The allocation never made it to the DCD, so remove it manually.
+            let mut mut_state = self.mut_state.lock().unwrap();
+            mut_state.allocated_areas.remove(&offset);
+            return Ok(());
+        }
+
+        let vm = self.vm();
+        let mut qmp = vm.qmp.lock().unwrap();
+        if let Err(e) = qmp.cxl_release_dynamic_capacity(&self.qom_path, offset, allocation.size())
+        {
+            let err = std::io::Error::other(format!(
+                "Failed to release dynamic capacity at CID {} for {}:{}: {}",
+                self.vsock_cid,
+                offset,
+                allocation.size(),
+                e
+            ));
+            eprintln!("{}", err);
+            ret_val = Err(err);
+        }
+        drop(qmp);
+
+        let manual_remove = if ret_val.is_err() {
+            // There was a previous error, so just remove it manually
             true
+        } else if !self.wait_for_release_dc(&allocation, crate::QMP_WAIT_TIMEOUT_MS) {
+            // A timeout means that we can't revoke the consumer's ephemeral
+            // memory. This is very unlikely to happen in our use case, so we
+            // will just log an error for now and manual remove the allocation.
+            // We will revisit this if it becomes an issue later.
+            let err = std::io::Error::other(format!(
+                "Timeout waiting for release of dynamic capacity at CID {} for {}:{}",
+                self.vsock_cid,
+                offset,
+                allocation.size()
+            ));
+            eprintln!("{}", err);
+            ret_val = Err(err);
+            // We timed out, so just manually remove the allocation from
+            // list of allocated areas.
+            true
+        } else {
+            // The allocation was removed by via the event handler
+            false
         };
 
         if manual_remove {
@@ -393,6 +405,33 @@ impl ConsumerState {
 
         if notify {
             self.release_dc_cond.notify_all();
+        }
+    }
+
+    pub fn release_all_allocations(&self) {
+        // It's possible that a new allocation could appear between when we
+        // collect the list of allocations and when we actually remove them.
+        // To be safe, keep checking for new allocations until there are none.
+        loop {
+            // Clone the EphAllocs separately, so we can call
+            // Vm::return_eph_memory_from_consumer(), which takes the consumer lock.
+            // Filter out allocations that already have a thread cleaning them up.
+            let allocs = {
+                let mut_state = self.mut_state.lock().unwrap();
+                mut_state
+                    .allocated_areas
+                    .values()
+                    .filter(|a| !a.is_release_requested())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if allocs.is_empty() {
+                break;
+            }
+
+            for a in allocs {
+                Vm::return_eph_memory_from_consumer(&a);
+            }
         }
     }
 

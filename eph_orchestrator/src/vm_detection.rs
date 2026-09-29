@@ -73,7 +73,7 @@ pub fn vm_detection_thread(
                 }
             }
         } else if event.kind.is_remove() {
-            crate::remove_vms(vms, event.paths.as_slice());
+            crate::Vm::remove_vms(vms, event.paths.as_slice());
         }
     }
 
