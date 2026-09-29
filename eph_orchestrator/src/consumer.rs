@@ -1,6 +1,6 @@
 //! Helper functions for interacting with Consumer VMs.
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
@@ -18,6 +18,8 @@ pub struct ConsumerState {
     qom_path: String,
     /* The maximum amount of ephemeral memory the consumer can receive */
     size: u64,
+    /* The Vsock stream for communicating with the consumer guest */
+    vsock_conn: Mutex<Option<VsockStream>>,
     /* Mutable state for the consumer VM protected by a mutex */
     mut_state: Mutex<ConsumerMutState>,
     /* Condition variable for signaling a CXL add DC event */
@@ -27,8 +29,6 @@ pub struct ConsumerState {
 }
 
 struct ConsumerMutState {
-    /* The Vsock stream for communicating with the consumer guest */
-    vsock_conn: Option<VsockStream>,
     /*
      * Map of areas in the consumer DCD device that have been allocated, and
      * which donor supplied the memory for each area.
@@ -84,8 +84,8 @@ impl ConsumerState {
                     vsock_cid: cid,
                     qom_path,
                     size,
+                    vsock_conn: Mutex::new(None),
                     mut_state: Mutex::new(ConsumerMutState {
-                        vsock_conn: None,
                         allocated_areas: BTreeMap::new(),
                     }),
                     add_dc_cond: Condvar::new(),
@@ -153,8 +153,19 @@ impl ConsumerState {
                 "Timed out waiting for dynamic capacity addition confirmation",
             ));
         }
-        // TODO: Send message to the consumer guest over the vsock connection
-        // to notify it that the dynamic capacity has been added.
+
+        // Send message to the consumer guest over the vsock connection to
+        // notify it that the dynamic capacity has been added.
+        let response = ConsumerCommand::new("eph-mem-response", Some(size_from_donor));
+        if let Err(e) = self.send_consumer_response(&response) {
+            // If we can't notify the consumer, there's no point in keeping the
+            // allocation, so remove it.
+            Vm::return_eph_memory_from_consumer(&rsvd_alloc);
+            return Err(std::io::Error::other(format!(
+                "Failed to send consumer response: {}",
+                e
+            )));
+        }
 
         Ok(())
     }
@@ -463,6 +474,20 @@ impl ConsumerState {
         !wait_result.timed_out()
     }
 
+    fn send_consumer_response(&self, cmd: &ConsumerCommand) -> std::io::Result<()> {
+        let cmd_string = format!("{}\n", serde_json::to_string(cmd)?);
+        let mut conn = self.vsock_conn.lock().unwrap();
+
+        if let Some(conn) = conn.as_mut() {
+            conn.write_all(cmd_string.as_bytes())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Vsock connection not available",
+            ))
+        }
+    }
+
     pub fn get_qom_path(&self) -> &str {
         &self.qom_path
     }
@@ -479,7 +504,6 @@ pub struct ConsumerCommand {
 }
 
 impl ConsumerCommand {
-    #[allow(dead_code)]
     pub fn new(function: impl Into<String>, size: Option<u64>) -> Self {
         Self {
             function: function.into(),
@@ -531,9 +555,19 @@ pub fn consumer_listener_thread(
         // Unwrap is safe because Vm::get_consumer ensures that consumer is Some.
         let consumer_state = consumer.consumer.as_ref().unwrap();
 
-        let mut state = consumer_state.mut_state.lock().unwrap();
+        // We don't want to be stalled by a misbehaving consumer VM. If try_lock fails,
+        // we know that another connection is active, so we can safely abandon this
+        // connection attempt.
+        let Ok(mut vsock_conn) = consumer_state.vsock_conn.try_lock() else {
+            eprintln!(
+                "Consumer VM with CID {} already has a vsock connection. Closing new connection.",
+                addr.cid()
+            );
+            continue;
+        };
+
         // Check if the consumer VM already has a connection.
-        if state.vsock_conn.is_some() {
+        if vsock_conn.is_some() {
             eprintln!(
                 "Consumer VM with CID {} already has a connection. Closing new connection.",
                 addr.cid()
@@ -542,7 +576,7 @@ pub fn consumer_listener_thread(
         }
         // Set the vsock connection for the consumer VM.
         if let Ok(stream_clone) = stream.try_clone() {
-            state.vsock_conn = Some(stream_clone);
+            *vsock_conn = Some(stream_clone);
         } else {
             eprintln!(
                 "Failed to clone VsockStream for consumer VM with CID {}. Closing connection.",
@@ -552,7 +586,7 @@ pub fn consumer_listener_thread(
         }
         // We need to drop the state to satisfy the borrow checker before
         // spawning the thread.
-        drop(state);
+        drop(vsock_conn);
 
         let vms_clone = vms.clone();
         std::thread::spawn(move || {
@@ -631,8 +665,8 @@ fn consumer_thread(
     // in the future by having the listener thread send a "already connected" message
     // to the consumer, indicating that it should close any other connections andtry again.
     if let Some(consumer_state) = &consumer.consumer {
-        let mut state = consumer_state.mut_state.lock().unwrap();
-        state.vsock_conn = None;
+        let mut vsock_conn = consumer_state.vsock_conn.lock().unwrap();
+        *vsock_conn = None;
     }
     Ok(())
 }

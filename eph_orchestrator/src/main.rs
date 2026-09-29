@@ -22,8 +22,8 @@ const VSOCK_PORT: u32 = 1848;
 // 2. Donor state mutex
 // 3. Consumer state mutex
 //
-// The QMP mutex should never be held while holding any other lock, since it
-// may block for an arbitrary amount of time.
+// The QMP/Vsock mutexes should never be held while holding any other lock,
+// since they may block for an arbitrary amount of time.
 //
 // We currently do not have an ordering for holding multiple donor or consumer
 // state mutexes at the same time, since we do not do that. If that pattern
