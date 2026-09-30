@@ -283,10 +283,7 @@ fn mount_guest_results(guest_shell: &SshShell, results_path: &str) -> Result<(),
     Ok(())
 }
 
-fn mount_workloads_dir(
-    guest_shell: &SshShell,
-    workloads_path: &str,
-) -> Result<(), ScailError> {
+fn mount_workloads_dir(guest_shell: &SshShell, workloads_path: &str) -> Result<(), ScailError> {
     const MOUNT_TAG: &str = "workloads_dir";
 
     guest_shell.run(cmd!(

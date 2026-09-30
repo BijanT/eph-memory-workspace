@@ -95,8 +95,8 @@ where
 fn install_host_dependencies<A>(
     ushell: &SshShell,
     login: &Login<A>,
-    cfg: &Config)
--> Result<(), ScailError>
+    cfg: &Config,
+) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + Clone,
 {
@@ -190,11 +190,15 @@ fn build_qemu(ushell: &SshShell) -> Result<(), ScailError> {
     };
     clone_git_repo(ushell, qemu_repo, Some(&qemu_dir), Some("main"), &[])?;
     ushell.run(cmd!("mkdir -p build").cwd(&qemu_dir))?;
-    ushell.run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd(&qemu_build_dir))?;
+    ushell
+        .run(cmd!("../configure --target-list=x86_64-softmmu --enable-kvm").cwd(&qemu_build_dir))?;
     ushell.run(cmd!("make -j$(nproc)").cwd(&qemu_build_dir))?;
 
     // Give qemu the capability to use BPF without sude
-    ushell.run(cmd!("sudo setcap cap_bpf,cap_perfmon+ep {}/qemu-system-x86_64", qemu_build_dir))?;
+    ushell.run(cmd!(
+        "sudo setcap cap_bpf,cap_perfmon+ep {}/qemu-system-x86_64",
+        qemu_build_dir
+    ))?;
 
     Ok(())
 }
@@ -264,7 +268,13 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     let ndctl_repo = GitRepo::HttpsPublic {
         repo: "github.com/weiny2/ndctl.git",
     };
-    clone_git_repo(ushell, ndctl_repo, None, Some("dcd-region3-2025-04-13"), &[])?;
+    clone_git_repo(
+        ushell,
+        ndctl_repo,
+        None,
+        Some("dcd-region3-2025-04-13"),
+        &[],
+    )?;
     ushell.run(cmd!("meson setup build").cwd("ndctl"))?;
     ushell.run(cmd!("meson compile -C build").cwd("ndctl"))?;
     ushell.run(cmd!("sudo meson install -C build").cwd("ndctl"))?;
@@ -301,13 +311,10 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
     clone_git_repo(ushell, wkspc_repo, Some(&wkspc_dir), branch, SUBMODULES)?;
 
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "ubmks")))?;
-    ushell.run(
-        cmd!("make && sudo make install")
-            .cwd(dir!(&wkspc_dir, "bpftool", "src"))
-    )?;
+    ushell.run(cmd!("make && sudo make install").cwd(dir!(&wkspc_dir, "bpftool", "src")))?;
     ushell.run(
         cmd!("make && sudo make install LIBDIR=/usr/lib/$(gcc -dumpmachine)")
-            .cwd(dir!(&wkspc_dir, "libbpf", "src"))
+            .cwd(dir!(&wkspc_dir, "libbpf", "src")),
     )?;
     ushell.run(cmd!("sudo ldconfig"))?;
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpf")))?;
@@ -352,7 +359,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     ushell.run(cmd!("mkdir -p {}", results_dir))?;
 
     let initramfs_path = dir!(&vm_info_dir, "initramfs.cpio");
-    let qemu_path = dir!(&user_home, "qemu", "build","qemu-system-x86_64");
+    let qemu_path = dir!(&user_home, "qemu", "build", "qemu-system-x86_64");
     let guest_kernel_bin = build_guest_kernel(ushell, &guest_kernel_dir, cfg)?;
 
     // Create the VM images
@@ -445,7 +452,11 @@ fn create_cloud_init_img(
         ushell.run(cmd!("ssh-keygen -t ed25519 -f {} -N ''", host_ssh_key_path))?;
     }
     let ssh_keys = ushell
-        .run(cmd!("cat {} {}", authorized_keys_path, host_ssh_pub_key_path))?
+        .run(cmd!(
+            "cat {} {}",
+            authorized_keys_path,
+            host_ssh_pub_key_path
+        ))?
         .stdout
         .lines()
         .filter(|line| line.trim().starts_with("ssh"))
@@ -509,8 +520,18 @@ fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailE
     // Copy the kernel modules to /lib/modules on the guest
     let kbuild_dir = dir!(&user_home, crate::GUEST_KERNEL_DIR, "kbuild");
     ushell.run(cmd!("mkdir -p {}", guest_img_mount_dir))?;
-    ushell.run(cmd!("sudo guestmount -a {} -i {}", img_path, guest_img_mount_dir))?;
-    ushell.run(cmd!("sudo make modules_install INSTALL_MOD_PATH={}", guest_img_mount_dir).cwd(&kbuild_dir))?;
+    ushell.run(cmd!(
+        "sudo guestmount -a {} -i {}",
+        img_path,
+        guest_img_mount_dir
+    ))?;
+    ushell.run(
+        cmd!(
+            "sudo make modules_install INSTALL_MOD_PATH={}",
+            guest_img_mount_dir
+        )
+        .cwd(&kbuild_dir),
+    )?;
     ushell.run(cmd!("sudo guestunmount {}", guest_img_mount_dir))?;
 
     Ok(img_path)
@@ -616,7 +637,8 @@ fn build_guest_kernel(
         false,
     )?;
 
-    ushell.run(cmd!("make -j$(nproc) modules LOCALVERSION=-{}", &local_version).cwd(&kbuild_dir))?;
+    ushell
+        .run(cmd!("make -j$(nproc) modules LOCALVERSION=-{}", &local_version).cwd(&kbuild_dir))?;
 
     // Compile perf tool
     let perf_path = dir!(guest_kernel_dir, "tools", "perf");
@@ -628,8 +650,8 @@ fn build_guest_kernel(
 fn build_and_install_host_kernel(
     ushell: &SshShell,
     host_kernel_dir: &str,
-    cfg: &Config)
--> Result<(), ScailError> {
+    cfg: &Config,
+) -> Result<(), ScailError> {
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
     let branch = cfg.host_kernel_branch.unwrap_or("main");
@@ -740,7 +762,7 @@ fn build_spark_on_host(shell: &SshShell) -> Result<(), ScailError> {
             "./build/mvn -T {}C -Pyarn -Phive -Phive-thriftserver -DskipTests clean package",
             compile_cores
         )
-        .cwd(&spark_dir)
+        .cwd(&spark_dir),
     )?;
 
     Ok(())

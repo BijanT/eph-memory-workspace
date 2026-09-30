@@ -18,7 +18,7 @@ enum Workload {
     Spark {
         scale_factor: u64,
         executor_mem_gb: u64,
-    }
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
@@ -136,7 +136,10 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
             let scale_factor: u64 = *spark_m.get_one::<u64>("scale_factor").unwrap();
             let executor_mem_gb: u64 = *spark_m.get_one::<u64>("executor_mem_gb").unwrap();
 
-            Workload::Spark { scale_factor, executor_mem_gb }
+            Workload::Spark {
+                scale_factor,
+                executor_mem_gb,
+            }
         }
         _ => unreachable!(),
     };
@@ -237,11 +240,7 @@ where
 
     if let Workload::Spark { scale_factor, .. } = &cfg.workload {
         // Generate the TPC-DS database if needed
-        generate_spark_db(
-            &guest_shell,
-            *scale_factor,
-            &guest_workloads_dir,
-        )?;
+        generate_spark_db(&guest_shell, *scale_factor, &guest_workloads_dir)?;
     }
 
     if cfg.thp {
@@ -335,28 +334,24 @@ where
                 )
                 .cwd(&guest_wkspc),
             )?;
-        },
-        Workload::Spark { executor_mem_gb, .. } => {
+        }
+        Workload::Spark {
+            executor_mem_gb, ..
+        } => {
             let query_file = dir!(&guest_workloads_dir, "tpcds", "queries", "all.sql");
             let spark_sql_bin = dir!(&guest_workloads_dir, "spark", "bin", "spark-sql");
 
             let start_time = std::time::Instant::now();
-            guest_shell.run(
-                cmd!(
-                    "{} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {}",
-                    cmd_prefix,
-                    spark_sql_bin,
-                    executor_mem_gb,
-                    query_file,
-                    spark_file
-                )
-            )?;
-            let duration = start_time.elapsed().as_secs_f64();
             guest_shell.run(cmd!(
-                "echo {:.3} | sudo tee {}",
-                duration,
-                spark_time_file
-             ))?;
+                "{} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {}",
+                cmd_prefix,
+                spark_sql_bin,
+                executor_mem_gb,
+                query_file,
+                spark_file
+            ))?;
+            let duration = start_time.elapsed().as_secs_f64();
+            guest_shell.run(cmd!("echo {:.3} | sudo tee {}", duration, spark_time_file))?;
         }
     }
 
@@ -370,7 +365,7 @@ where
             num_splits,
         )?;
     }
-    if cfg.host_flamegraph.is_some() || cfg.host_perf_stat{
+    if cfg.host_flamegraph.is_some() || cfg.host_perf_stat {
         host_shell.run(cmd!("sudo pkill -INT perf"))?;
     }
 
@@ -402,11 +397,7 @@ where
         // Stop the pf_trace program
         host_shell.run(cmd!("touch /tmp/stop_pf_trace"))?;
         std::thread::sleep(std::time::Duration::from_secs(1));
-        host_shell.run(cmd!(
-            "mv {} {}",
-            host_pf_trace_tmp_file,
-            host_pf_trace_file
-        ))?;
+        host_shell.run(cmd!("mv {} {}", host_pf_trace_tmp_file, host_pf_trace_file))?;
     }
     if cfg.host_kvm_pf_trace {
         // Stop the kvm_pf_trace program
@@ -479,18 +470,24 @@ fn generate_spark_db(
         let existing_scale: String = guest_shell.run(cmd!("cat {}", &scale_factor_file))?.stdout;
         let existing_scale: u64 = existing_scale.trim().parse().unwrap();
         if existing_scale == scale {
-            println!("TPC-DS data already exists at scale {}, skipping generation", scale);
+            println!(
+                "TPC-DS data already exists at scale {}, skipping generation",
+                scale
+            );
             return Ok(());
         }
     }
 
     // Generate TPC-DS data
     guest_shell.run(cmd!("mkdir -p {}", &tpcds_data_dir))?;
-    guest_shell.run(cmd!(
-        "./dsdgen -dir {} -scale {} -terminate N -force Y",
-        &tpcds_data_dir,
-        scale
-    ).cwd(&tpcds_tools_dir))?;
+    guest_shell.run(
+        cmd!(
+            "./dsdgen -dir {} -scale {} -terminate N -force Y",
+            &tpcds_data_dir,
+            scale
+        )
+        .cwd(&tpcds_tools_dir),
+    )?;
 
     // Tell spark to create the database
     guest_shell.run(cmd!(
@@ -504,10 +501,6 @@ fn generate_spark_db(
     ))?;
 
     // Make sure we update the scale factor file
-    guest_shell.run(cmd!(
-        "echo {} > {}",
-        scale,
-        &scale_factor_file
-    ))?;
+    guest_shell.run(cmd!("echo {} > {}", scale, &scale_factor_file))?;
     Ok(())
 }
