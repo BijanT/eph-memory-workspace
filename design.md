@@ -73,7 +73,8 @@ Our fork of QEMU that has expanded DCD support can be found here: https://github
 ## Consumer Guest
 
 The consumer VM guest must be able to manage the ephemeral memory capacity that it receives from donor VMs.
-It should also contain a library to make it easier for applications to safely use ephemeral memory.
+This involves a memory management filesystem with which applications will allocate ephemeral memory, and a daemon process to request ephemeral memory from, and return it to, the orchestrator.
+It must also include a library to make it easier for applications to safely use ephemeral memory.
 
 ### Management of Ephemeral Memory Capacity
 
@@ -88,6 +89,7 @@ To limit the risk of data being revoked, `ephmfs` prefers to allocate ephemeral 
 When an `ephmfs` file is memory mapped into a process's address space it can be accessed directly, and `ephmfs` itself provides no recovery mechanisms to protect applications against revocation.
 When ephemeral memory has been revoked, an access to that memory will result in a synchronous `SIGBUS` signal.
 That way, user space code, i.e., the `libephmem` library described below, can register a signal handler to identify the address that caused the fault and do the recovery itself.
+Additionally, when `ephmfs` raises a `SIGBUS`, it records that the faulting page and its enclosing 256MB addition/revocation chunk have been revoked.
 
 Previous versions of the design dictated that a page fault to a mapped `ephmfs` file would result in the faulting thread receiving a `SIGSEGV` signal, causing the process to crash, guarding against accidental access to ephemeral memory.
 In order to access the mapped file, the process would have to issue an `ioctl` to the file, telling `ephmfs` the process is in an attempt context.
@@ -104,6 +106,43 @@ The responsibility of ensuring safe access to ephemeral memory lies solely with 
 
 The kernel source code we are currently running for the consumer guests, which includes the `ephmfs` module and the in-submission Linux DCD support, can be found at https://github.com/BijanT/linux_eph_memory in the `ephmfs-on-dcd-v10` branch.
 
+### ephemerald
+
+Multiple applications on a consumer VM may want access to ephemeral memory.
+Instead of having each of them individually communicate with the orchestrator, they use the `ephemerald` daemon, which coordinates between them and talks to the orchestrator on their behalf.
+Applications reserve ephemeral memory by sending a request to `ephemerald` via a Unix domain socket, which any process is allowed to connect to.
+In response to that request, `ephemerald` requests ephemeral memory for the consumer VM over a vsock connection to the orchestrator on the host.
+If the request is granted, `ephemerald` will give ownership of the resulting DAX device to `ephmfs` via a sysfs interface.
+To prevent other applications from using this reservation, `ephemerald` uses the `SO_PEERCRED` socket option to determine the requester's PID.
+It instructs `ephmfs` to only use that memory for the requesting process (TODO: we have not yet supported or considered `fork()` semantics).
+Once the memory is onlined, `ephemerald` informs the application how much ephemeral memory it has available.
+`ephemerald` considers all applications running in the same consumer VM to be cooperative, so it has no mechanism for fairness of reservations between applications.
+We believe this is acceptable because a consumer VM represents a single tenant who would manage fairness themselves.
+
+An application may ask `ephemerald` to unreserve some of its ephemeral memory.
+When this happens, `ephemerald` will tell `ephmfs` to no longer allocate from the unreserved region.
+It will then inform the orchestrator that it is releasing the specified memory.
+When an application ends, as detected by its socket closing, `ephemerald` will unreserve all of the ephemeral memory for that application.
+
+Communication with the orchestrator is guarded with timeouts.
+If a request to the orchestrator times out, `ephemerald` will consider the request a failure.
+In the case of a reservation request, it will report that 0 bytes have been reserved.
+If capacity is given after the timeout, `ephemerald` will return it to the orchestrator.
+
+The orchestrator optionally informs `ephemerald` when ephemeral memory has been revoked.
+Currently, `ephemerald` does not inform the affected applications, and relies on them to discover the revocation by receiving a `SIGBUS` when accessing the revoked memory.
+Therefore, revoked memory counts toward an application's reservation until an access to it faults.
+
+`ephemerald` should be started before the first application that wants to use ephemeral memory begins.
+Otherwise, the application will not be able to use ephemeral memory.
+It can be started automatically on boot by a service like `systemd` or manually.
+To recover from crashes, on startup it will communicate with the orchestrator to learn of any existing reservations for the consumer.
+We anticipate that `ephemerald` crashing will be rare, and recovery is complicated because the previously existing connections to applications will be gone.
+Therefore, if pre-existing reservations are found, `ephemerald` will return them to the orchestrator, invalidating previous allocations, and signal to `ephmfs` that it can clean up its state.
+Existing applications may reconnect to `ephemerald` if they still wish to use ephemeral memory.
+
+`ephemerald` will be implemented in this repository.
+
 ### libephmem
 
 `libephmem` is a library of useful helpers for using ephemeral memory.
@@ -111,13 +150,18 @@ The main functions in `libephmem` are the following:
 
 | Function | Description |
 | --- | --- |
-| `eph_alloc(size)` | Allocates `size` bytes from ephemeral memory. Returns a handle to ephemeral memory. |
-| `eph_free(eph_handle)` | Free ephemeral memory |
-| `eph_put(src, dst, offset, size)` | Copies `size` bytes from normal memory `src` to ephemeral memory handle `dst` at `offset`. |
-| `eph_get(src, dst, offset, size)` | Copies `size` bytes from ephemeral memory handle `src` at `offset` into normal memory `dst`. |
+| `eph_reserve(size)` | Reserve `size` bytes of ephemeral memory for this application. `size` is rounded up to the addition/revocation granularity (256MB). Returns the amount of memory reserved. |
+| `eph_unreserve(size)` | Release `size` bytes of ephemeral memory to the orchestrator. `size` is rounded down to the addition/revocation granularity (256MB). |
+| `eph_alloc(size)` | Allocate `size` bytes from ephemeral memory. Returns a handle to ephemeral memory. |
+| `eph_free(eph_handle)` | Free an ephemeral memory allocation. |
+| `eph_put(src, dst, offset, size)` | Copy `size` bytes from normal memory `src` to ephemeral memory handle `dst` at `offset`. |
+| `eph_get(src, dst, offset, size)` | Copy `size` bytes from ephemeral memory handle `src` at `offset` into normal memory `dst`. |
 | `eph_attempt(eph_handle, fn, arg)` | Enter the attempt context for `eph_handle`, running `fn` with the raw pointer of the ephemeral memory handle and `arg`. |
 
-Applications allocate ephemeral memory by calling `eph_alloc()`, which handles the details of creating a file in `ephmfs` and memory mapping that file.
+Applications reserve chunks of ephemeral memory for their use by calling `eph_reserve()`, which initiates communication with `ephemerald` to retrieve ephemeral memory from the orchestrator.
+It blocks until the request is complete or fails and returns the amount of ephemeral memory reserved, which may be less than requested, or even 0.
+Once ephemeral memory has been reserved, applications allocate chunks of that reservation by calling `eph_alloc()`, which handles the details of creating a file in `ephmfs` and memory mapping that file.
+If there is not enough reserved ephemeral memory for the allocation, `ephmfs` will reject it.
 The simplest way to use ephemeral memory is through `eph_put/get()`, which are safe functions that applications can use to copy data to/from an ephemeral memory location.
 If a copy fails, the corresponding function will return an error.
 While the copy interface is simple, many applications would prefer to avoid a copy and access the data directly.
@@ -126,6 +170,11 @@ Those applications can instead call `eph_attempt()` to get direct access to the 
 Inside of the attempt context, `libephmem` will gracefully handle revocations, allowing `eph_attempt()` to return an error indicating failure instead of crashing the application.
 Currently `eph_attempt()` has the restriction that a thread may not nest calls to `eph_attempt()`, though we plan to remove this restriction in the future.
 The `eph_put/get()` functions use `eph_attempt()` under the hood, so they cannot be called inside another attempt.
+
+If an application no longer needs its ephemeral memory reservation, it can call `eph_unreserve()` to release it.
+`eph_unreserve()` is treated as a courtesy, not something required for correctness, so it does not block and cannot fail.
+Live handles to ephemeral memory may be invalidated by this.
+Accesses to ephemeral memory that was released due to this call will fail in the same way as accesses to revoked ephemeral memory.
 
 Error handling in `libephmem` is done by installing a handler for synchronous `SIGBUS` signals that include the faulting address.
 Inside the handler, `libephmem` checks if the faulting address is an ephemeral memory address that is currently in an attempt context.
@@ -149,6 +198,9 @@ Additionally, if running on a CPU that does not support memory protection keys, 
 The default location `libephmem` will attempt to allocate `ephmfs` files from is `/mnt/ephmfs`.
 Users can override this by setting the `EPHMFS_DIR` environment variable.
 All `ephmfs` files created by `libephmem` are created with the `O_TMPFILE` flag, so they are automatically deleted if the process ends unexpectedly.
+
+The default location `libephmem` will attempt to locate the `ephemerald` Unix domain socket is `/run/ephemerald.sock`.
+Users can override this by setting the `EPHEMERALD_PATH` environment variable.
 
 `libephmem` will be implemented in this repository.
 
@@ -200,7 +252,7 @@ We will utilize that idea for ephemeral memory.
 
 The orchestrator is what coordinates between the donor hypervisors, consumer hypervisors, and consumer VMs and runs on the host.
 Each donor hypervisor sends the orchestrator information on how much of its memory is unutilized and can be given to consumer VMs.
-Consumer VMs request ephemeral memory from the orchestrator, via `libephmem`.
+Consumer VMs request ephemeral memory from the orchestrator, via `ephemerald`.
 If the orchestrator accepts the request, it signals the consumer hypervisor to add dynamic capacity to the consumer VM.
 When it does so, it will ensure that the memory has been zeroed so as not to leak donor VM data to the consumer.
 
@@ -212,6 +264,10 @@ Revocation takes the following steps:
 1. The orchestrator orders a consumer hypervisor to forcefully revoke ephemeral memory from the consumer VM.
 2. The orchestrator informs the donor hypervisor that it has access to more memory.
 3. On a donor hypervisor page fault, former consumer pages will be zeroed.
+
+A consumer VM may also voluntarily return ephemeral memory.
+This is done by `ephemerald` sending a return request to the orchestrator.
+The orchestrator handles the return of ephemeral memory the same as it does revocations, including the use of forced removal.
 
 To minimize communication overheads and to help ensure donors have enough of a buffer before the next revocation, capacity additions and revocations will happen at a granularity of 256MB.
 This may be reduced in the future if this proves to be too conservative.
@@ -228,19 +284,19 @@ QEMU VMs that want to use ephemeral memory should create a Unix domain socket fo
 The orchestrator will read this directory on startup and use inotify [12] to be alerted of entering and exiting VMs.
 When a new VM is detected, the orchestrator determines what it is able to donate by issuing the `query-memdev` QMP command, which returns a list of memory devices on the VM, their sizes, and whether the memory on those devices is available to be donated.
 Any VM that has donatable memory is considered a potential donor VM.
-Additionally, consumer guest applications can communicate directly with the orchestrator via a vsock connection [13].
+Additionally, the consumer's `ephemerald` daemon communicates directly with the orchestrator via a vsock connection [13].
 
-A consumer VM will request ephemeral memory from the orchestrator by sending a message with the amount of memory requested to the orchestrator via the vsock connection.
+`ephemerald` will request ephemeral memory from the orchestrator by sending a message with the amount of memory requested to the orchestrator via the vsock connection.
 The orchestrator will consult its list of donatable memory regions, and send an `eph-mem-donate-capacity` QMP command to a donor VM that can potentially provide the needed memory.
 The donor will respond to the command with the amount of memory donated, which may be less than the requested amount, or even 0 if it cannot donate any memory.
-After receiving donated memory, the orchestrator will give that memory to the consumer VM via the `cxl-add-dynamic-capacity` QMP command and alert the consumer guest of the addition via the vsock interface.
+After receiving donated memory, the orchestrator will give that memory to the consumer VM via the `cxl-add-dynamic-capacity` QMP command and alert `ephemerald` of the addition via the vsock interface.
 
 A donor VM may eventually need to reclaim the memory it has donated.
 In that case, it will issue the `EPH_MEM_REVOKE` QMP event.
 In response to this event, the orchestrator will check which consumers have memory belonging to the donor.
 It will then send the `cxl-release-dynamic-capacity` command with the `forced-removal` flag set to `true` to those consumers until at least the amount of memory requested in the `EPH_MEM_REVOKE` event has been returned.
 After that, the orchestrator will send the `eph-mem-return-capacity` command to the donor, informing it that the memory has been returned.
-Finally, the orchestrator will optionally inform the consumer guests that memory has been revoked via the vsock interface.
+Finally, the orchestrator will optionally inform the consumer's `ephemerald` instance that memory has been revoked via the vsock interface.
 This may allow the guest to avoid attempting to access ephemeral memory that is already gone.
 
 ### Multi-Host Orchestrator Design
