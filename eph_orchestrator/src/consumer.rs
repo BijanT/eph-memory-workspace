@@ -1,12 +1,13 @@
 //! Helper functions for interacting with Consumer VMs.
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use crate::{EphAllocation, Vm, VmList, donor, qmp};
-use serde::{Deserialize, Serialize};
+use eph_proto::{ConsumerCommand, ConsumerFunction};
 use vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
 
 pub struct ConsumerState {
@@ -156,7 +157,8 @@ impl ConsumerState {
 
         // Send message to the consumer guest over the vsock connection to
         // notify it that the dynamic capacity has been added.
-        let response = ConsumerCommand::new("eph-mem-response", Some(size_from_donor));
+        let response =
+            ConsumerCommand::new(ConsumerFunction::EphMemResponse, Some(size_from_donor));
         if let Err(e) = self.send_consumer_response(&response) {
             // If we can't notify the consumer, there's no point in keeping the
             // allocation, so remove it.
@@ -475,11 +477,10 @@ impl ConsumerState {
     }
 
     fn send_consumer_response(&self, cmd: &ConsumerCommand) -> std::io::Result<()> {
-        let cmd_string = format!("{}\n", serde_json::to_string(cmd)?);
         let mut conn = self.vsock_conn.lock().unwrap();
 
         if let Some(conn) = conn.as_mut() {
-            conn.write_all(cmd_string.as_bytes())
+            cmd.send(conn)
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
@@ -490,25 +491,6 @@ impl ConsumerState {
 
     pub fn get_qom_path(&self) -> &str {
         &self.qom_path
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-// Consumer commands are much simpler than QMP. They only have a function name
-// and, optionally, a size argument.
-pub struct ConsumerCommand {
-    pub function: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size: Option<u64>,
-}
-
-impl ConsumerCommand {
-    pub fn new(function: impl Into<String>, size: Option<u64>) -> Self {
-        Self {
-            function: function.into(),
-            size,
-        }
     }
 }
 
@@ -615,7 +597,7 @@ fn consumer_thread(
         match limited.read_line(&mut line) {
             Ok(0) => break, // EOF reached
             Ok(_) if line.ends_with('\n') => {
-                let consumer_cmd = match serde_json::from_str::<ConsumerCommand>(&line) {
+                let consumer_cmd = match ConsumerCommand::from_str(&line) {
                     Ok(cmd) => cmd,
                     Err(e) => {
                         eprintln!(
@@ -676,8 +658,8 @@ fn consumer_cmd_dispatacher(
     vms: &Arc<crate::VmList>,
     cmd: ConsumerCommand,
 ) -> std::io::Result<()> {
-    match cmd.function.as_str() {
-        "eph-mem-request" => {
+    match cmd.function {
+        ConsumerFunction::EphMemRequest => {
             if let Some(size) = cmd.size {
                 // Unwrap is safe because consumer_cmd_dispatcher() is only
                 // called from consumer_thread(), which only operates on
@@ -689,7 +671,9 @@ fn consumer_cmd_dispatacher(
                     .handle_eph_mem_request(vms, size)?;
             } else {
                 eprintln!(
-                    "Allocate command from consumer VM at '{}' missing size argument",
+                    "{} command from consumer VM at '{}' missing size argument",
+                    cmd.to_json()
+                        .expect("ConsumerCommand is always serializable"),
                     consumer.qmp_socket_path.display()
                 );
             }
@@ -697,7 +681,8 @@ fn consumer_cmd_dispatacher(
         _ => {
             eprintln!(
                 "Unknown command '{}' from consumer VM at '{}'",
-                cmd.function,
+                cmd.to_json()
+                    .expect("ConsumerCommand is always serializable"),
                 consumer.qmp_socket_path.display()
             );
         }

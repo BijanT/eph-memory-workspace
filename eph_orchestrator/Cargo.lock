@@ -114,10 +114,19 @@ name = "eph_orchestrator"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "eph_proto",
  "notify",
  "serde",
  "serde_json",
  "vsock",
+]
+
+[[package]]
+name = "eph_proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
