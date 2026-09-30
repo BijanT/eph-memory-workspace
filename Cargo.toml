@@ -1,0 +1,3 @@
+[workspace]
+members = ["eph_orchestrator", "eph_proto", "runner"]
+resolver = "3"
