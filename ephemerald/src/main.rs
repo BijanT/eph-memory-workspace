@@ -1,10 +1,12 @@
 mod client;
 mod connection;
+mod orchestrator;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use client::Client;
+use orchestrator::Orchestrator;
 
 fn main() {
     // Have the server crash if any thread panics
@@ -15,6 +17,13 @@ fn main() {
     }));
 
     let clients = Arc::new(Mutex::new(BTreeSet::<Client>::new()));
+    let orchestrator = Arc::new(match Orchestrator::new() {
+        Ok(orchestrator) => orchestrator,
+        Err(err) => {
+            eprintln!("Failed to connect to orchestrator: {:?}", err);
+            std::process::exit(1);
+        }
+    });
 
-    Client::listener_thread(clients).unwrap();
+    Client::listener_thread(clients, orchestrator).unwrap();
 }

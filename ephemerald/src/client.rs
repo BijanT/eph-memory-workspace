@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::connection::{Connection, ConnectionType};
+use crate::orchestrator::Orchestrator;
 
 #[allow(dead_code)]
 struct EphAllocation {
@@ -83,7 +84,10 @@ impl Client {
     /// Spawns a new client thread for each connection.
     ///
     /// * `clients` - A list of all connected clients
-    pub fn listener_thread(clients: ClientList) -> std::io::Result<()> {
+    pub fn listener_thread(
+        clients: ClientList,
+        orchestrator: Arc<Orchestrator>,
+    ) -> std::io::Result<()> {
         const MAX_CLIENTS: u64 = 64;
         const SOCKET_PATH: &str = "/run/ephemerald.sock";
         // A socket file left behind by a previous run (e.g. after a crash)
@@ -111,13 +115,17 @@ impl Client {
                 eprintln!("Maximum number of clients reached");
                 continue;
             }
-            if let Err(e) = Client::register_client(&clients, stream) {
+            if let Err(e) = Client::register_client(&clients, &orchestrator, stream) {
                 eprintln!("Error registering client: {}", e);
             }
         }
     }
 
-    fn register_client(clients: &ClientList, stream: UnixStream) -> std::io::Result<()> {
+    fn register_client(
+        clients: &ClientList,
+        orchestrator: &Arc<Orchestrator>,
+        stream: UnixStream,
+    ) -> std::io::Result<()> {
         let pid = get_stream_pid(&stream)?;
         // Take the clients lock before creating the client to defend against
         // a race where the client connection ends the close handler is called
@@ -125,14 +133,19 @@ impl Client {
         // that the close handler is called only after the client is added to
         // the list.
         let mut clients_locked = clients.lock().unwrap();
-        let client = Client::new(stream, pid, clients)?;
+        let client = Client::new(stream, pid, clients, orchestrator)?;
         // We only want one connection per client, so we replace any existing
         // client
         clients_locked.replace(client);
         Ok(())
     }
 
-    fn new(stream: UnixStream, pid: u32, clients: &ClientList) -> std::io::Result<Self> {
+    fn new(
+        stream: UnixStream,
+        pid: u32,
+        clients: &ClientList,
+        orchestrator: &Arc<Orchestrator>,
+    ) -> std::io::Result<Self> {
         let c1 = clients.clone();
         let close_handler = move |ctype: ConnectionType, id: u64| {
             if let ConnectionType::Client(client_pid) = ctype {
@@ -147,9 +160,10 @@ impl Client {
             }
         };
         let c2 = clients.clone();
+        let o = orchestrator.clone();
         let msg_handler = move |ctype: ConnectionType, val: serde_json::Value| {
             if let ConnectionType::Client(_) = ctype {
-                Client::msg_handler(c2.clone(), ctype, val)
+                Client::msg_handler(c2.clone(), ctype, o.clone(), val)
             } else {
                 // This should never happen by construction. Keep this branch
                 // to keep the compiler happy.
@@ -175,6 +189,7 @@ impl Client {
     fn msg_handler(
         _clients: ClientList,
         _conn: ConnectionType,
+        _orchestrator: Arc<Orchestrator>,
         _val: serde_json::Value,
     ) -> std::io::Result<()> {
         Ok(())

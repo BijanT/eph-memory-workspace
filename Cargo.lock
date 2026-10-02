@@ -382,6 +382,7 @@ dependencies = [
 name = "ephemerald"
 version = "0.1.0"
 dependencies = [
+ "eph_proto",
  "libc",
  "serde",
  "serde_json",
