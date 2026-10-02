@@ -114,6 +114,13 @@ impl<T: ConnectionTrait> Connection<T> {
         Ok(ret)
     }
 
+    pub fn send(&self, msg: serde_json::Value) -> std::io::Result<()> {
+        let mut write_stream = self.write_stream.lock().unwrap();
+        let msg_string = format!("{}\n", msg);
+        write_stream.write_all(msg_string.as_bytes())?;
+        Ok(())
+    }
+
     fn read_thread<F, G>(
         stream: T,
         ctype: ConnectionType,

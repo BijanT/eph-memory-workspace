@@ -101,6 +101,22 @@ impl Client {
         }
     }
 
+    pub fn send_eph_mem_response(&self, size: u64) -> std::io::Result<()> {
+        let mut mut_state = self.mut_state.lock().unwrap();
+        if mut_state.pending_request.is_none() {
+            return Err(std::io::Error::other("No pending request to respond to"));
+        }
+        mut_state.pending_request = None;
+        // Drop the lock for the high latency IO
+        drop(mut_state);
+
+        let resp = ConsumerCommand {
+            function: ConsumerFunction::EphMemResponse,
+            size: Some(size),
+        };
+        self.connection.send(serde_json::to_value(&resp)?)
+    }
+
     fn register_client(
         clients: &ClientList,
         orchestrator: &Arc<Orchestrator>,
@@ -210,7 +226,7 @@ impl Client {
 
     fn handle_eph_mem_request(
         client: Arc<Client>,
-        _orchestrator: &Arc<Orchestrator>,
+        orchestrator: &Arc<Orchestrator>,
         amount: u64,
     ) -> std::io::Result<()> {
         let mut mut_state = client.mut_state.lock().unwrap();
@@ -224,7 +240,25 @@ impl Client {
         }
 
         mut_state.pending_request = Some(amount);
-        Ok(())
+        //Drop the mut_state because we don't want to hold it while doing IO
+        drop(mut_state);
+
+        // Forward the ephemeral memory request to the orchestrator
+        let result = orchestrator.request_eph_mem(amount);
+
+        // If the request failed, send the response to the client, which will
+        // also unset pending_request.
+        // There is potentially a race condition where another request sets
+        // pending request before we unset it. We are protected from this
+        // for two reasons:
+        // 1. pending_request will not be set again when already set
+        // 2. Consumer requests are serialized by msg_handler
+        if result.is_err()
+            && let Err(e) = client.send_eph_mem_response(0)
+        {
+            eprintln!("Failed to send EphMemResponse to client: {}", e);
+        }
+        result
     }
 }
 

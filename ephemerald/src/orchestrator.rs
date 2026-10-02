@@ -1,4 +1,5 @@
 use crate::connection::{Connection, ConnectionType};
+use eph_proto::{ConsumerCommand, ConsumerFunction};
 use vsock::VsockStream;
 
 #[allow(dead_code)]
@@ -30,5 +31,13 @@ impl Orchestrator {
         // to the orchestrator? Just kill the process in this case.
         eprintln!("Connection to orchestrator closed. Exiting.");
         std::process::exit(1);
+    }
+
+    pub fn request_eph_mem(&self, amount: u64) -> std::io::Result<()> {
+        let cmd = ConsumerCommand {
+            function: ConsumerFunction::EphMemRequest,
+            size: Some(amount),
+        };
+        self.connection.send(serde_json::to_value(&cmd)?)
     }
 }
