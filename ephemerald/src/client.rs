@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, Permissions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -9,6 +9,7 @@ use std::thread;
 
 use crate::connection::{Connection, ConnectionType};
 use crate::orchestrator::Orchestrator;
+use eph_proto::{ConsumerCommand, ConsumerFunction};
 
 #[allow(dead_code)]
 struct EphAllocation {
@@ -42,43 +43,22 @@ impl PartialEq for EphAllocation {
 
 impl Eq for EphAllocation {}
 
-#[allow(dead_code)]
 pub struct Client {
     // The connection to the client
     connection: Connection<UnixStream>,
-    // The PID of the client
-    pid: u32,
+    // The mutable state for this client
+    mut_state: Mutex<ClientMutState>,
+}
+
+#[allow(dead_code)]
+pub struct ClientMutState {
     // A set of all allocations for this client
     allocations: BTreeSet<EphAllocation>,
+    // The size of the pending request if there is one
+    pending_request: Option<u64>,
 }
 
-impl std::borrow::Borrow<u32> for Client {
-    fn borrow(&self) -> &u32 {
-        &self.pid
-    }
-}
-
-impl Ord for Client {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.pid.cmp(&other.pid)
-    }
-}
-
-impl PartialOrd for Client {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for Client {
-    fn eq(&self, other: &Self) -> bool {
-        self.pid == other.pid
-    }
-}
-
-impl Eq for Client {}
-
-pub type ClientList = Arc<Mutex<BTreeSet<Client>>>;
+pub type ClientList = Arc<Mutex<BTreeMap<u32, Arc<Client>>>>;
 impl Client {
     /// Thread that waits for incoming client connections.
     /// Spawns a new client thread for each connection.
@@ -136,7 +116,7 @@ impl Client {
         let client = Client::new(stream, pid, clients, orchestrator)?;
         // We only want one connection per client, so we replace any existing
         // client
-        clients_locked.replace(client);
+        clients_locked.insert(pid, Arc::new(client));
         Ok(())
     }
 
@@ -181,17 +161,69 @@ impl Client {
         )?;
         Ok(Self {
             connection,
-            pid,
-            allocations: BTreeSet::new(),
+            mut_state: Mutex::new(ClientMutState {
+                allocations: BTreeSet::new(),
+                pending_request: None,
+            }),
         })
     }
 
     fn msg_handler(
-        _clients: ClientList,
-        _conn: ConnectionType,
-        _orchestrator: Arc<Orchestrator>,
-        _val: serde_json::Value,
+        clients: ClientList,
+        conn: ConnectionType,
+        orchestrator: Arc<Orchestrator>,
+        val: serde_json::Value,
     ) -> std::io::Result<()> {
+        let cmd = serde_json::from_value::<ConsumerCommand>(val)?;
+        let client_pid = match conn {
+            ConnectionType::Client(pid) => pid,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Invalid connection type",
+                ));
+            }
+        };
+
+        match cmd.function {
+            ConsumerFunction::EphMemRequest => {
+                let Some(client) = clients.lock().unwrap().get(&client_pid).cloned() else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Client with PID {client_pid} not found"),
+                    ));
+                };
+                let Some(amount) = cmd.size else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Missing size in EphMemRequest",
+                    ));
+                };
+                Self::handle_eph_mem_request(client, &orchestrator, amount)
+            }
+            ConsumerFunction::EphMemResponse => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Received EphMemResponse command from client {client_pid}"),
+            )),
+        }
+    }
+
+    fn handle_eph_mem_request(
+        client: Arc<Client>,
+        _orchestrator: &Arc<Orchestrator>,
+        amount: u64,
+    ) -> std::io::Result<()> {
+        let mut mut_state = client.mut_state.lock().unwrap();
+        // Don't accept another reservation from this client if they already
+        // have a pending request
+        if mut_state.pending_request.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "Client already has a pending ephemeral memory request",
+            ));
+        }
+
+        mut_state.pending_request = Some(amount);
         Ok(())
     }
 }

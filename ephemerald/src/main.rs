@@ -2,7 +2,7 @@ mod client;
 mod connection;
 mod orchestrator;
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use client::Client;
@@ -16,7 +16,7 @@ fn main() {
         std::process::exit(1);
     }));
 
-    let clients = Arc::new(Mutex::new(BTreeSet::<Client>::new()));
+    let clients = Arc::new(Mutex::new(BTreeMap::<u32, Arc<Client>>::new()));
     let orchestrator = Arc::new(match Orchestrator::new() {
         Ok(orchestrator) => orchestrator,
         Err(err) => {

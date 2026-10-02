@@ -58,7 +58,8 @@ impl<T: Read + Write + TryClone + Shutdown + Send + 'static> ConnectionTrait for
 pub struct Connection<T: ConnectionTrait> {
     // The type of the connection (Orchestrator or Client)
     ctype: ConnectionType,
-    // The stream for writing to the connection
+    // The stream for writing to the connection.
+    // Because IO is slow, this should not be taken with any other lock.
     write_stream: Mutex<T>,
     // The stream for shutting down the connection. A copy of the write stream
     // but available without having to acquire the lock.
