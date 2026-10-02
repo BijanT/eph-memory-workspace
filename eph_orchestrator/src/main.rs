@@ -15,7 +15,6 @@ use donor::DonorState;
 const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
 const QMP_WAIT_TIMEOUT_MS: u64 = 1000;
 const QMP_DIRECTORY: &str = "/tmp/ephmem/";
-const VSOCK_PORT: u32 = 1848;
 
 // To prevent deadlocks, the following lock ordering should be followed:
 // 1. VmList lock (read or write)
@@ -315,7 +314,9 @@ fn main() {
 
         let vm_list = vms.clone();
         s.spawn(move || {
-            if let Err(e) = consumer::consumer_listener_thread(vm_list, VSOCK_PORT, QMP_DIRECTORY) {
+            if let Err(e) =
+                consumer::consumer_listener_thread(vm_list, eph_proto::VSOCK_PORT, QMP_DIRECTORY)
+            {
                 eprintln!("Error in consumer listener thread: {}", e);
             }
         });
