@@ -172,7 +172,10 @@ impl<T: ConnectionTrait> Connection<T> {
                     } else {
                         std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
-                            format!("Connection closed before end of message from {} ({} bytes read)", ctype, len),
+                            format!(
+                                "Connection closed before end of message from {} ({} bytes read)",
+                                ctype, len
+                            ),
                         )
                     };
                     return Err(e);
