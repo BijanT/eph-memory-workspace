@@ -17,7 +17,7 @@ fn main() {
     }));
 
     let clients = Arc::new(Mutex::new(BTreeMap::<u32, Arc<Client>>::new()));
-    let orchestrator = Arc::new(match Orchestrator::new() {
+    let orchestrator = Arc::new(match Orchestrator::new(clients.clone()) {
         Ok(orchestrator) => orchestrator,
         Err(err) => {
             eprintln!("Failed to connect to orchestrator: {:?}", err);

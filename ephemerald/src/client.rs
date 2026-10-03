@@ -101,12 +101,21 @@ impl Client {
         }
     }
 
-    pub fn send_eph_mem_response(&self, size: u64) -> std::io::Result<()> {
+    /// Forward an EphMemResponse to the client
+    ///
+    /// `allocation` - The allocation to send to the client. If None, the client
+    /// will be sent a response with size 0, indicating that the request was
+    /// denied.
+    fn send_eph_mem_response(&self, allocation: Option<EphAllocation>) -> std::io::Result<()> {
+        let size = allocation.as_ref().map_or(0, |a| a.size);
         let mut mut_state = self.mut_state.lock().unwrap();
         if mut_state.pending_request.is_none() {
             return Err(std::io::Error::other("No pending request to respond to"));
         }
         mut_state.pending_request = None;
+        if let Some(allocation) = allocation {
+            mut_state.allocations.insert(allocation);
+        }
         // Drop the lock for the high latency IO
         drop(mut_state);
 
@@ -116,7 +125,71 @@ impl Client {
             // The client doesn't need to know the DCD offset.
             offset: None,
         };
+        // TODO: We should return the allocation to the orchestrator if we
+        // cannot send the response to the client.
         self.connection.send(serde_json::to_value(&resp)?)
+    }
+
+    /// Handle an EphMemResponse from the orchestrator.
+    ///
+    /// `clients` - The list of clients
+    /// `size` - The size of the ephemeral memory allocated to this VM
+    /// `offset` - The offset of the allocation in the VM's DCD.
+    pub fn handle_eph_mem_response(
+        clients: &ClientList,
+        size: u64,
+        offset: u64,
+    ) -> std::io::Result<()> {
+        // Responses of size 0 should not happen
+        if size == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "EphMemResponse with size 0",
+            ));
+        }
+
+        // Find the client with the closest fitting pending request.
+        let mut best_match_client: Option<Arc<Client>> = None;
+        let mut best_match_size_diff: u64 = u64::MAX;
+        let clients_locked = clients.lock().unwrap();
+        for client in clients_locked.values() {
+            let mut_state = client.mut_state.lock().unwrap();
+            if let Some(pending_size) = mut_state.pending_request {
+                // The response to a request will be no greater than the
+                // requested size, so only consider clients with pending
+                // requests greater than or equal to the size of the response.
+                if pending_size >= size {
+                    let size_diff = pending_size - size;
+                    if size_diff < best_match_size_diff {
+                        best_match_client = Some(client.clone());
+                        best_match_size_diff = size_diff;
+                    }
+                    // If we find a perfect match, we can stop searching.
+                    if size_diff == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        drop(clients_locked);
+
+        // It looks like there could be a race condition here where the
+        // orchestrator sends two responses in parallel, and the same client
+        // gets chosen for each because we drop the client lock before clearing
+        // its pending_size in send_eph_mem_response.
+        // This cannot happen because handling of messages from the orchestrator
+        // is serialized by the orchestrator's msg_handler.
+        if let Some(client) = best_match_client {
+            return client.send_eph_mem_response(Some(EphAllocation { offset, size }));
+        } else {
+            // TODO: We need to add a path to return memory to the orchestrator
+            // if no client is found.
+            eprintln!(
+                "No client found with a pending request for size {} (offset {})",
+                size, offset
+            );
+        }
+        Ok(())
     }
 
     fn register_client(
@@ -256,7 +329,7 @@ impl Client {
         // 1. pending_request will not be set again when already set
         // 2. Consumer requests are serialized by msg_handler
         if result.is_err()
-            && let Err(e) = client.send_eph_mem_response(0)
+            && let Err(e) = client.send_eph_mem_response(None)
         {
             eprintln!("Failed to send EphMemResponse to client: {}", e);
         }

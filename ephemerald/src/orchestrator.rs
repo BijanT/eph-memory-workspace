@@ -1,3 +1,4 @@
+use crate::client::{Client, ClientList};
 use crate::connection::{Connection, ConnectionType};
 use eph_proto::{ConsumerCommand, ConsumerFunction};
 use vsock::VsockStream;
@@ -8,22 +9,55 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new(clients: ClientList) -> std::io::Result<Self> {
         let host_cid = vsock::VMADDR_CID_HOST;
         let port = eph_proto::VSOCK_PORT;
         let stream = VsockStream::connect_with_cid_port(host_cid, port)?;
+
+        let msg_handler = move |ctype: ConnectionType, json: serde_json::Value| {
+            Self::msg_handler(clients.clone(), ctype, json)
+        };
+
         let connection = Connection::new(
             ConnectionType::Orchestrator,
             stream,
-            Self::msg_handler,
+            msg_handler,
             Self::close_handler,
         )?;
         Ok(Self { connection })
     }
 
-    fn msg_handler(_ctype: ConnectionType, _json: serde_json::Value) -> std::io::Result<()> {
-        // Implement the message handling logic here
-        Ok(())
+    fn msg_handler(
+        clients: ClientList,
+        _ctype: ConnectionType,
+        json: serde_json::Value,
+    ) -> std::io::Result<()> {
+        let cmd = serde_json::from_value::<ConsumerCommand>(json)?;
+
+        match cmd.function {
+            ConsumerFunction::EphMemRequest => {
+                eprintln!(
+                    "Received EphMemRequest from consumer, but orchestrator doesn't handle this command."
+                );
+                Ok(())
+            }
+            ConsumerFunction::EphMemResponse => {
+                // Requires both the size and offset fields to be present
+                let Some(size) = cmd.size else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "EphMemResponse missing size field",
+                    ));
+                };
+                let Some(offset) = cmd.offset else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "EphMemResponse missing offset field",
+                    ));
+                };
+                Client::handle_eph_mem_response(&clients, size, offset)
+            }
+        }
     }
 
     fn close_handler(_ctype: ConnectionType, _id: u64) {
