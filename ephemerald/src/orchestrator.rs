@@ -37,6 +37,7 @@ impl Orchestrator {
         let cmd = ConsumerCommand {
             function: ConsumerFunction::EphMemRequest,
             size: Some(amount),
+            offset: None,
         };
         self.connection.send(serde_json::to_value(&cmd)?)
     }

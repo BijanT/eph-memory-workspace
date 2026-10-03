@@ -113,6 +113,8 @@ impl Client {
         let resp = ConsumerCommand {
             function: ConsumerFunction::EphMemResponse,
             size: Some(size),
+            // The client doesn't need to know the DCD offset.
+            offset: None,
         };
         self.connection.send(serde_json::to_value(&resp)?)
     }

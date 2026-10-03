@@ -157,8 +157,11 @@ impl ConsumerState {
 
         // Send message to the consumer guest over the vsock connection to
         // notify it that the dynamic capacity has been added.
-        let response =
-            ConsumerCommand::new(ConsumerFunction::EphMemResponse, Some(size_from_donor));
+        let response = ConsumerCommand::new(
+            ConsumerFunction::EphMemResponse,
+            Some(size_from_donor),
+            Some(rsvd_offset),
+        );
         if let Err(e) = self.send_consumer_response(&response) {
             // If we can't notify the consumer, there's no point in keeping the
             // allocation, so remove it.
