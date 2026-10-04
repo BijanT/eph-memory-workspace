@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::connection::{Connection, ConnectionType};
+use crate::dcd::DaxDevice;
 use crate::orchestrator::Orchestrator;
 use eph_proto::{ConsumerCommand, ConsumerFunction};
 
@@ -15,6 +16,7 @@ use eph_proto::{ConsumerCommand, ConsumerFunction};
 struct EphAllocation {
     offset: u64,
     size: u64,
+    dax_device: DaxDevice,
 }
 
 impl std::borrow::Borrow<u64> for EphAllocation {
@@ -135,19 +137,13 @@ impl Client {
     /// `clients` - The list of clients
     /// `size` - The size of the ephemeral memory allocated to this VM
     /// `offset` - The offset of the allocation in the VM's DCD.
+    /// `dax_device` - The DAX device for the allocation.
     pub fn handle_eph_mem_response(
         clients: &ClientList,
         size: u64,
         offset: u64,
+        dax_device: DaxDevice,
     ) -> std::io::Result<()> {
-        // Responses of size 0 should not happen
-        if size == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "EphMemResponse with size 0",
-            ));
-        }
-
         // Find the client with the closest fitting pending request.
         let mut best_match_client: Option<Arc<Client>> = None;
         let mut best_match_size_diff: u64 = u64::MAX;
@@ -180,7 +176,11 @@ impl Client {
         // This cannot happen because handling of messages from the orchestrator
         // is serialized by the orchestrator's msg_handler.
         if let Some(client) = best_match_client {
-            return client.send_eph_mem_response(Some(EphAllocation { offset, size }));
+            return client.send_eph_mem_response(Some(EphAllocation {
+                offset,
+                size,
+                dax_device,
+            }));
         } else {
             // TODO: We need to add a path to return memory to the orchestrator
             // if no client is found.

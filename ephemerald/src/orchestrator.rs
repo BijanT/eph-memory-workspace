@@ -1,5 +1,6 @@
 use crate::client::{Client, ClientList};
 use crate::connection::{Connection, ConnectionType};
+use crate::dcd::DaxDevice;
 use eph_proto::{ConsumerCommand, ConsumerFunction};
 use vsock::VsockStream;
 
@@ -55,7 +56,16 @@ impl Orchestrator {
                         "EphMemResponse missing offset field",
                     ));
                 };
-                Client::handle_eph_mem_response(&clients, size, offset)
+                // Responses of size 0 should not happen
+                if size == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "EphMemResponse with size 0",
+                    ));
+                }
+
+                let dax_device = DaxDevice::new(size)?;
+                Client::handle_eph_mem_response(&clients, size, offset, dax_device)
             }
         }
     }

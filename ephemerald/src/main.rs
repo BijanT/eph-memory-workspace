@@ -1,5 +1,6 @@
 mod client;
 mod connection;
+mod dcd;
 mod orchestrator;
 
 use std::collections::BTreeMap;
@@ -15,6 +16,11 @@ fn main() {
         default_panic(info);
         std::process::exit(1);
     }));
+
+    if let Err(e) = dcd::DaxDevice::init() {
+        eprintln!("Failed to initialize DAX: {:?}", e);
+        std::process::exit(1);
+    }
 
     let clients = Arc::new(Mutex::new(BTreeMap::<u32, Arc<Client>>::new()));
     let orchestrator = Arc::new(match Orchestrator::new(clients.clone()) {
