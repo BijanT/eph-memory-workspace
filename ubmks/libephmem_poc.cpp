@@ -131,6 +131,7 @@ int main(int argc, char *argv[]) {
 	unsigned long max_main_memory_blocks;
 	unsigned long max_eph_memory_blocks;
 	int sleep_time_us;
+	size_t eph_mem_reserve_size;
 
 	if (argc != 5) {
 		std::cerr << "Usage: " << argv[0] << " <total_blocks> "
@@ -151,6 +152,18 @@ int main(int argc, char *argv[]) {
 	if (total_blocks < max_main_memory_blocks + max_eph_memory_blocks) {
 		std::cerr << "Error: total_blocks must be >= max_main_memory_blocks + max_eph_memory_blocks" << std::endl;
 		return 1;
+	}
+
+	// Reserve the ephemeral memory and adjust max_eph_memory_blocks accordingly
+	if (max_eph_memory_blocks > 0) {
+		eph_mem_reserve_size = libephmem_reserve(max_eph_memory_blocks * BLOCK_SIZE);
+		if (eph_mem_reserve_size / BLOCK_SIZE < max_eph_memory_blocks) {
+			max_eph_memory_blocks = eph_mem_reserve_size / BLOCK_SIZE;
+			std::cerr << "Warning: Could only reserve " << eph_mem_reserve_size
+				<< " bytes of ephemeral memory, allowing for "
+				<< max_eph_memory_blocks << " blocks of size "
+				<< BLOCK_SIZE << " bytes." << std::endl;
+		}
 	}
 
 	block_selector = std::uniform_int_distribution<int>(0, total_blocks - 1);

@@ -22,10 +22,18 @@ void eph_sum(void *ptr, size_t size, void *arg) {
 }
 
 int main(int argc, char **argv) {
+    size_t reserve_size = LIBEPHMEM_RESERVATION_GRANULARITY;
     int alloc_size = 1024 * 1024; // 1 MB
     struct libephmem_handle *handle;
     int ret;
     long sum;
+
+    size_t actual_reserve_size = libephmem_reserve(reserve_size);
+    if (actual_reserve_size == 0) {
+        fprintf(stderr, "Failed to reserve ephemeral memory\n");
+        return 1;
+    }
+    printf("Reserved %zu bytes of ephemeral memory\n", actual_reserve_size);
 
     handle = libephmem_alloc(alloc_size);
     if (handle == NULL) {
