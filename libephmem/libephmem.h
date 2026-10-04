@@ -9,6 +9,11 @@ extern "C" {
 #endif
 
 /*
+ * The granularity, in bytes, of ephemeral memory reservations
+ */
+static const size_t LIBEPHMEM_RESERVATION_GRANULARITY = 256 * 1024 * 1024; /* 256 MiB */
+
+/*
  * Opaque declaration of the private libephmem_handle structure.
  * Applications use pointers to libephmem_handle as a handle to their ephemeral
  * memory allocations.
@@ -22,6 +27,16 @@ struct libephmem_handle;
  * @return: The size of the ephemeral memory allocation in bytes.
  */
 size_t libephmem_size(struct libephmem_handle *handle);
+
+/*
+ * Reserves up to the specified amount of ephemeral memory for the process.
+ * This blocks for up to 1 second waiting for a response from ephemerald.
+ * @param amount: The amount of ephemeral memory to reserve in bytes, rounded
+ * up to the nearest multiple of LIBEPHMEM_RESERVATION_GRANULARITY.
+ * @return The amount of ephemeral memory actually reserved. May be less than
+ * requested or zero.
+ */
+size_t libephmem_reserve(size_t amount);
 
 /*
  * Allocates ephemeral memory of the specified size.
