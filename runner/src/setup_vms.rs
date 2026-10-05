@@ -341,7 +341,12 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // Directory to store the complete VM domain XML files
     let domains_dir = dir!(&user_home, crate::DOMAINS_DIR);
     // List of VM's to setup
-    let vms_list = [("balloon_vm", 48), ("hotplug_vm", 48)];
+    let vms_list = [
+        ("balloon_vm", 48),
+        ("hotplug_vm", 48),
+        ("donor_vm", 16),
+        ("consumer_vm", 16),
+    ];
     // Strings to replace in the domain XML templates
     let template_replace_from = [
         "\\[GUEST_KERNEL\\]",
@@ -365,6 +370,9 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // Create the VM images
     let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
     let ubuntu_img_path = create_ubuntu_img(ushell, &imgs_dir)?;
+
+    // The donor and consumer VMs need this directory to store their QMP sockets
+    crate::create_qmp_dir(ushell)?;
 
     // Do setup for each VM
     for (vm_name, _size_gb) in vms_list.iter() {

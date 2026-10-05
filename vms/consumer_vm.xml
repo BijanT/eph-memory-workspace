@@ -1,0 +1,96 @@
+<!--
+We can't determine absolute paths because they can change depending on the
+user/environment. So, we use placeholders in the form [PLACEHOLDER_NAME] that
+will be replaced with the actual paths by the scripts that use this XML file.
+-->
+<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+	<name>consumer_vm</name>
+	<memory unit="GiB">16</memory>
+	<currentMemory unit="GiB">16</currentMemory>
+	<memoryBacking>
+		<hugepages>
+			<page size="2" unit="M"/>
+		</hugepages>
+		<source type="memfd"/>
+		<access mode="shared"/>
+	</memoryBacking>
+	<vcpu>4</vcpu>
+	<os>
+		<type machine="q35">hvm</type>
+		<kernel>[GUEST_KERNEL]</kernel>
+		<initrd>[GUEST_INITRD]</initrd>
+		<cmdline>console=ttyS0,115200n8 console=ttyS0</cmdline>
+	</os>
+	<cpu mode="host-passthrough">
+		<topology sockets="1" cores="4" threads="1"/>
+	</cpu>
+	<features>
+		<acpi/>
+	</features>
+	<clock offset="utc"/>
+	<on_poweroff>destroy</on_poweroff>
+	<on_reboot>restart</on_reboot>
+	<on_crash>destroy</on_crash>
+	<devices>
+		<emulator>[QEMU]</emulator>
+		<disk type="file" device="disk">
+			<driver name="qemu" type="qcow2" queues="4"/>
+			<source file="[GUEST_DISK_IMAGE]"/>
+			<target dev="vda" bus="virtio"/>
+			<transient shareBacking="yes"/>
+		</disk>
+		<disk type="file" device="disk">
+			<driver name="qemu" type="raw" queues="4"/>
+			<source file="[CLOUD_INIT_IMAGE]"/>
+			<target dev="vdb" bus="virtio"/>
+			<readonly/>
+		</disk>
+		<serial type="pty">
+			<target port="0"/>
+		</serial>
+		<console type="pty">
+			<target type="serial" port="0"/>
+		</console>
+		<interface type="network">
+			<source network="default"/>
+			<model type="virtio"/>
+		</interface>
+		<filesystem type="mount" accessmode="passthrough">
+			<driver type="virtiofs" queue="1024"/>
+			<source dir="[HOST_RESULTS_DIR]"/>
+			<!-- Tag to use to mount the results directory in the guest-->
+			<target dir="results_dir"/>
+		</filesystem>
+		<filesystem type="mount" accessmode="passthrough">
+			<driver type="virtiofs" queue="1024"/>
+			<source dir="[GUEST_KERNEL_DIR]"/>
+			<!-- Tag to use to mount the results directory in the guest-->
+			<target dir="guest_kernel_dir"/>
+		</filesystem>
+		<filesystem type="mount" accessmode="passthrough">
+			<driver type="virtiofs" queue="1024"/>
+			<source dir="[WORKLOADS_DIR]"/>
+			<target dir="workloads_dir"/>
+		</filesystem>
+		<vsock model='virtio'>
+			<cid auto='no' address='3'/>
+		</vsock>
+	</devices>
+	<qemu:commandline>
+		<!-- Consumer QMP socket format is <base_dir>/<vsock VID>.qmp -->
+		<qemu:arg value="-qmp"/>
+		<qemu:arg value="unix:/tmp/ephmem/3.qmp,server,nowait"/>
+		<qemu:arg value="-machine"/>
+		<qemu:arg value="cxl=on,hmat=on"/>
+		<qemu:arg value="-object"/>
+		<qemu:arg value="memory-backend-memfd,id=mem0,size=4G,host-nodes=0,policy=bind,hugetlb=on,hugetlbsize=2M,share=on,reserve=off"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.0,addr=0x1e"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="cxl-rp,port=0,bus=cxl.0,id=rp0,chassis=0,slot=2"/>
+		<qemu:arg value="-device"/>
+		<qemu:arg value="cxl-type3,bus=rp0,num-dc-regions=1,volatile-dc-memdev=mem0,id=cxlmem0"/>
+		<qemu:arg value="-M"/>
+		<qemu:arg value="cxl-fmw.0.targets.0=cxl.0,cxl-fmw.0.size=4G,cxl-fmw.0.use-ram=true"/>
+	</qemu:commandline>
+</domain>

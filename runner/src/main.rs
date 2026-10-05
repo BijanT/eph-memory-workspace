@@ -14,6 +14,7 @@ const DOMAINS_DIR: &str = "domains";
 const GUEST_KERNEL_DIR: &str = "guest-kernel";
 const HOST_KERNEL_DIR: &str = "host-kernel";
 const QEMU_DIR: &str = "qemu";
+const QMP_SOCK_DIR: &str = "/tmp/ephmem";
 
 const VM_USERNAME: &str = "ubuntu";
 const LIBVIRT_URI: &str = "qemu:///system";
@@ -295,5 +296,11 @@ fn mount_workloads_dir(guest_shell: &SshShell, workloads_path: &str) -> Result<(
     // Spark also seems to care about the group
     guest_shell.run(cmd!("sudo chgrp -R $USER {}", workloads_path))?;
 
+    Ok(())
+}
+
+fn create_qmp_dir(shell: &SshShell) -> Result<(), ScailError> {
+    shell.run(cmd!("mkdir -p {}", crate::QMP_SOCK_DIR))?;
+    shell.run(cmd!("chmod 1777 {}", crate::QMP_SOCK_DIR))?;
     Ok(())
 }
