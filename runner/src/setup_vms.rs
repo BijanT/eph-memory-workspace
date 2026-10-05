@@ -291,13 +291,15 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     ushell.run(cmd!("sudo chown -R $USER {}", kernel_mnt_dir))?;
     ushell.run(cmd!("sudo cp perf /usr/bin/").cwd(&perf_path))?;
 
+    libscail::install_rust(ushell)?;
+
     Ok(())
 }
 
 fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
     const SUBMODULES: &[&str] = &["bpftool", "libbpf", "libscail", "workloads/spark"];
     let user_home = get_user_home_dir(ushell)?;
-    let wkspc_dir = dir!(user_home, crate::WKSPC_DIR);
+    let wkspc_dir = dir!(&user_home, crate::WKSPC_DIR);
     let user = cfg.git_user.unwrap();
     let secret = cfg.secret.unwrap();
     let branch = cfg.wkspc_branch;
@@ -318,6 +320,7 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
     )?;
     ushell.run(cmd!("sudo ldconfig"))?;
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpf")))?;
+    ushell.run(cmd!("{}/.cargo/bin/cargo build", &user_home).cwd(dir!(&wkspc_dir)))?;
 
     Ok(())
 }
