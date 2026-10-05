@@ -440,7 +440,7 @@ fn generate_flamegraph(
     ))?;
     for i in 0..num_splits {
         let perf_script_file = format!("{}_{}.perfscript", perf_script_file_stem, i);
-        let flamegraph_file = format!("{}_{}.svg", &flamegraph_file_stem, i);
+        let flamegraph_file = format!("{}_{}.svg", flamegraph_file_stem, i);
         shell.run(cmd!(
             "cat {} | ./FlameGraph/stackcollapse-perf.pl > /tmp/flamegraph",
             perf_script_file
