@@ -81,7 +81,7 @@ will be replaced with the actual paths by the scripts that use this XML file.
 		<qemu:arg value="-qmp"/>
 		<qemu:arg value="unix:/tmp/ephmem/donor.qmp,server,nowait"/>
 		<qemu:arg value="-object"/>
-		<qemu:arg value="memory-backend-memfd,id=donatable0,size=4G,hugetlb=on,hugetlbsize=2M,share=off,reserve=off,donatable=on"/>
+		<qemu:arg value="memory-backend-memfd,id=donatable0,size=4G,hugetlb=on,hugetlbsize=2M,share=off,reserve=off,donatable=on,use-userfaultfd=off"/>
 		<qemu:arg value="-numa"/>
 		<qemu:arg value="node,nodeid=1,memdev=donatable0"/>
 	</qemu:commandline>
