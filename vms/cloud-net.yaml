@@ -2,5 +2,6 @@ version: 2
 ethernets:
   interface0:
     dhcp4: true
+    dhcp-identifier: mac
     match:
       name: enp*
