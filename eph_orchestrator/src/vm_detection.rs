@@ -155,6 +155,15 @@ fn check_new_vm(
         return Err(e);
     }
 
+    let is_donor = new_vm.donor.is_some();
+    let is_consumer = new_vm.consumer.is_some();
+    println!(
+        "New VM detected: {} (donor: {}, consumer: {})",
+        path.display(),
+        is_donor,
+        is_consumer
+    );
+
     vms.write().unwrap().insert(path.to_path_buf(), new_vm);
 
     Ok(())

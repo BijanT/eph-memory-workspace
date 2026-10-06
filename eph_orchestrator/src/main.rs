@@ -107,6 +107,8 @@ impl Vm {
         };
 
         for vm in removed_vms {
+            println!("Removing VM: {}", vm.qmp_socket_path.display());
+
             // If a consumer VM is leaving, release all its allocations.
             if let Some(consumer) = vm.consumer.as_ref() {
                 consumer.release_all_allocations();

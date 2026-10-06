@@ -309,6 +309,14 @@ impl DonorState {
         for alloc in allocs_to_revoke {
             Vm::return_eph_memory_from_consumer(&alloc);
         }
+
+        // All the VM communication is done, so we can safely print a debug
+        // message without slowing things down.
+        println!(
+            "Revoked ephemeral memory for donor {}: {} bytes",
+            self.vm().qmp_socket_path.display(),
+            revoke_size
+        );
         Ok(())
     }
 

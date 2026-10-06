@@ -99,6 +99,14 @@ impl ConsumerState {
     }
 
     pub fn handle_eph_mem_request(&self, vms: &VmList, size: u64) -> std::io::Result<()> {
+        // The consumer allocation is not latency sensitive, so we're fine
+        // printing here.
+        println!(
+            "Consumer VM {} requesting ephemeral memory of size {}",
+            self.vm().qmp_socket_path.display(),
+            size
+        );
+
         // Make sure the size is EPH_MEM_DONATION_GRANULARITY aligned
         let Some(size) = size.checked_next_multiple_of(crate::EPH_MEM_DONATION_GRANULARITY) else {
             return Err(std::io::Error::other(
@@ -171,6 +179,12 @@ impl ConsumerState {
                 e
             )));
         }
+
+        println!(
+            "Consumer VM {} successfully added dynamic capacity of size {}",
+            self.vm().qmp_socket_path.display(),
+            size_from_donor
+        );
 
         Ok(())
     }
