@@ -71,9 +71,9 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    let mut host_shell = SshShell::with_any_key(login.username, &login.host)?;
+    let host_shell = SshShell::with_any_key(login.username, &login.host)?;
 
-    if !cfg.skip_host_setup {
+    let host_shell = if !cfg.skip_host_setup {
         if cfg.resize_root {
             libscail::resize_root_partition(&host_shell)?;
         }
@@ -82,17 +82,22 @@ where
 
         // The host will be rebooted here, so the group changes will be applied
         // and the new kernel in use.
-        host_shell = crate::reboot_and_connect(login)?;
+        let host_shell = crate::reboot_and_connect(login)?;
         clone_research_workspace(&host_shell, cfg)?;
         build_qemu(&host_shell)?;
         if !cfg.skip_spark_build {
             build_spark_on_host(&host_shell)?;
         }
+
+        host_shell
     } else {
         // Still clone the host research workspace, which may include the VM
         // configuration changes we want to apply.
         clone_research_workspace(&host_shell, cfg)?;
-    }
+
+        // Reboot to clear any existing state
+        crate::reboot_and_connect(login)?
+    };
 
     setup_guest_vms(&host_shell, &login.host, cfg)?;
 
