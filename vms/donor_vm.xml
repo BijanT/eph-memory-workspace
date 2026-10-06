@@ -76,6 +76,7 @@ will be replaced with the actual paths by the scripts that use this XML file.
 			<source dir="[WORKLOADS_DIR]"/>
 			<target dir="workloads_dir"/>
 		</filesystem>
+		<memballoon model="none"/>
 	</devices>
 	<qemu:commandline>
 		<qemu:arg value="-qmp"/>
