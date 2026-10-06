@@ -25,6 +25,8 @@ pub fn cli_options() -> clap::Command {
 	.arg(arg!(--skip_spark_build "Skip building Spark on the host"))
 	.arg(arg!(--resize_root "(Option) Resize root partition to fill disk")
 		.action(ArgAction::SetTrue))
+    .arg(arg!(--skip_host_setup "Skip setting up the host and only configure the guest VMs")
+        .action(ArgAction::SetTrue))
 }
 
 struct Config<'a> {
@@ -35,6 +37,7 @@ struct Config<'a> {
     host_kernel_branch: Option<&'a str>,
     skip_spark_build: bool,
     resize_root: bool,
+    skip_host_setup: bool,
 }
 
 pub fn run(sub_m: &ArgMatches) -> Result<(), ScailError> {
@@ -58,6 +61,7 @@ pub fn run(sub_m: &ArgMatches) -> Result<(), ScailError> {
             .map(|s| s.as_str()),
         skip_spark_build: sub_m.get_flag("skip_spark_build"),
         resize_root: sub_m.get_flag("resize_root"),
+        skip_host_setup: sub_m.get_flag("skip_host_setup"),
     };
 
     run_inner(&login, &config)
@@ -67,21 +71,27 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    let host_shell = SshShell::with_any_key(login.username, &login.host)?;
+    let mut host_shell = SshShell::with_any_key(login.username, &login.host)?;
 
-    if cfg.resize_root {
-        libscail::resize_root_partition(&host_shell)?;
-    }
+    if !cfg.skip_host_setup {
+        if cfg.resize_root {
+            libscail::resize_root_partition(&host_shell)?;
+        }
 
-    install_host_dependencies(&host_shell, login, cfg)?;
+        install_host_dependencies(&host_shell, login, cfg)?;
 
-    // The host will be rebooted here, so the group changes will be applied
-    // and the new kernel in use.
-    let host_shell = crate::reboot_and_connect(login)?;
-    clone_research_workspace(&host_shell, cfg)?;
-    build_qemu(&host_shell)?;
-    if !cfg.skip_spark_build {
-        build_spark_on_host(&host_shell)?;
+        // The host will be rebooted here, so the group changes will be applied
+        // and the new kernel in use.
+        host_shell = crate::reboot_and_connect(login)?;
+        clone_research_workspace(&host_shell, cfg)?;
+        build_qemu(&host_shell)?;
+        if !cfg.skip_spark_build {
+            build_spark_on_host(&host_shell)?;
+        }
+    } else {
+        // Still clone the host research workspace, which may include the VM
+        // configuration changes we want to apply.
+        clone_research_workspace(&host_shell, cfg)?;
     }
 
     setup_guest_vms(&host_shell, &login.host, cfg)?;
