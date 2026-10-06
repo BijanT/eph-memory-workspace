@@ -169,7 +169,7 @@ impl QmpConnection {
         let args = types::CxlReleaseDynamicCapacityArgs {
             path: qom_path.to_string(),
             host_id: 0,
-            selection_policy: types::CxlExtentRemovalPolicy::Prescriptive,
+            removal_policy: types::CxlExtentRemovalPolicy::Prescriptive,
             forced_removal: Some(true),
             sanitize_on_release: None,
             region: 0,

@@ -164,7 +164,7 @@ pub struct CxlReleaseDynamicCapacityArgs {
     // The "host-id" of a host in a CXL pool. Not used here
     pub host_id: u16,
     // How to remove extents from the DCD device. We always use "Prescriptive"
-    pub selection_policy: CxlExtentRemovalPolicy,
+    pub removal_policy: CxlExtentRemovalPolicy,
     // If the extent should be forcefully removed. Always true for us
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forced_removal: Option<bool>,
