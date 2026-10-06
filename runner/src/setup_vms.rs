@@ -281,13 +281,13 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
 
     // Build the DCD fork of ndctl
     let ndctl_repo = GitRepo::HttpsPublic {
-        repo: "github.com/weiny2/ndctl.git",
+        repo: "github.com/anisa-su993/anisa-ndctl.git",
     };
     clone_git_repo(
         ushell,
         ndctl_repo,
-        None,
-        Some("dcd-region3-2025-04-13"),
+        Some("ndctl"),
+        Some("dcd-2026-05-21"),
         &[],
     )?;
     ushell.run(cmd!("meson setup build").cwd("ndctl"))?;
