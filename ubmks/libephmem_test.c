@@ -23,7 +23,7 @@ void eph_sum(void *ptr, size_t size, void *arg) {
 
 int main(int argc, char **argv) {
     size_t reserve_size = LIBEPHMEM_RESERVATION_GRANULARITY;
-    int alloc_size = 1024 * 1024; // 1 MB
+    int alloc_size = 256 * 1024 * 1024; // 256 MB
     struct libephmem_handle *handle;
     int ret;
     long sum;
