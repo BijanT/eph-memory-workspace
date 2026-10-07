@@ -16,6 +16,12 @@ const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
 const QMP_WAIT_TIMEOUT_MS: u64 = 1000;
 const QMP_DIRECTORY: &str = "/tmp/ephmem/";
 
+static VERBOSE: OnceLock<bool> = OnceLock::new();
+
+fn verbose() -> bool {
+    VERBOSE.get().copied().unwrap_or(false)
+}
+
 // To prevent deadlocks, the following lock ordering should be followed:
 // 1. VmList lock (read or write)
 // 2. Donor state mutex
@@ -48,31 +54,48 @@ impl Vm {
         let alloc_id = alloc.id;
 
         // If the consumer VM is gone, we can just skip the bookkeeping.
+        let consumer_start = std::time::Instant::now();
         if let Some(consumer) = consumer
             && consumer.consumer.is_some()
         {
             let consumer_state = consumer.consumer.as_ref().unwrap();
             let _ = consumer_state.release_reserved_memory(consumer_offset);
         }
+        let consumer_duration = consumer_start.elapsed();
 
         // If a donor has already committed to this allocation, take its info
         // and return the memory below. Otherwise, mark the allocation
         // abandoned: if a donor is concurrently in the process of committing
         // to it, commit_allocation() will notice and return the memory
         // itself instead of leaking it.
+        let abandon_start = std::time::Instant::now();
         let Some(donor_alloc) = alloc.abandon_or_take_donor() else {
             return;
         };
+        let abandon_duration = abandon_start.elapsed();
+
         let donor = donor_alloc.donor_vm();
         let donor_qom_path = donor_alloc.donor_qom_path.clone();
         let size = alloc.size();
 
         // If the donor VM is gone, we can just skip the returning the memory
+        let donor_start = std::time::Instant::now();
         if let Some(donor) = donor
             && donor.donor.is_some()
         {
             let donor_state = donor.donor.as_ref().unwrap();
             donor_state.return_and_bookkeep_eph_memory(&donor_qom_path, alloc_id, size);
+        }
+        let donor_duration = donor_start.elapsed();
+
+        if verbose() {
+            println!(
+                "size={} consumer_us={} abandon_us={} donor_us={}",
+                size,
+                consumer_duration.as_micros(),
+                abandon_duration.as_micros(),
+                donor_duration.as_micros()
+            );
         }
     }
 
@@ -287,6 +310,16 @@ impl DonorAllocation {
 
 type VmList = RwLock<BTreeMap<PathBuf, Arc<Vm>>>;
 
+fn clap_args() -> clap::ArgMatches {
+    clap::Command::new("eph_orchestrator")
+        .arg(
+            clap::arg!(--verbose "Enable verbose output")
+                .short('v')
+                .action(clap::ArgAction::SetTrue),
+        )
+        .get_matches()
+}
+
 fn main() {
     println!("Starting eph_orchestrator...");
 
@@ -294,6 +327,9 @@ fn main() {
         EPH_MEM_DONATION_GRANULARITY.is_power_of_two(),
         "EPH_MEM_DONATION_GRANULARITY must be a power of two"
     );
+
+    let matches = clap_args();
+    let _ = VERBOSE.set(matches.get_flag("verbose"));
 
     let vms = Arc::new(RwLock::new(BTreeMap::new()));
 
