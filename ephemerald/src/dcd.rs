@@ -1,5 +1,8 @@
+use std::ffi::CString;
 use std::fs;
 use std::process::Command;
+
+const EPHMFS_MOUNTPOINT: &str = "/mnt/ephmfs";
 
 #[allow(dead_code)]
 pub struct DaxDevice {
@@ -14,12 +17,8 @@ pub struct DaxDevice {
 
 impl DaxDevice {
     pub fn init() -> std::io::Result<()> {
-        // Nothing matters if EphMFS is not mounted
-        if !ephmfs_mounted()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "EphMFS filesystem is not mounted",
-            ));
+        if !ephmfs_mounted(EPHMFS_MOUNTPOINT)? {
+            mount_ephmfs(EPHMFS_MOUNTPOINT)?;
         }
 
         // We don't need to create a DCD region if it exists
@@ -174,12 +173,52 @@ impl DaxDevice {
 }
 
 /// Returns true if an EphMFS filesystem is mounted on the system
-fn ephmfs_mounted() -> std::io::Result<bool> {
+fn ephmfs_mounted(mountpoint: &str) -> std::io::Result<bool> {
+    // If the mountpoint doesn't exist, nothing can be mounted there.
+    let target = match fs::canonicalize(mountpoint) {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+
     let mounts = fs::read_to_string("/proc/self/mounts")?;
     Ok(mounts.lines().any(|line| {
         // Each line is: source mountpoint fstype options dump pass
         let mut fields = line.split_whitespace();
-        let (_source, _mp, fstype) = (fields.next(), fields.next(), fields.next());
+        let (_source, mp, fstype) = (fields.next(), fields.next(), fields.next());
+        // Canonicalize so differences like trailing slashes or symlinks
+        // don't cause a false negative.
         fstype == Some("EphMFS")
+            && mp.is_some_and(|mp| fs::canonicalize(mp).is_ok_and(|mp| mp == target))
     }))
+}
+
+fn mount_ephmfs(mountpoint: &str) -> std::io::Result<()> {
+    let target = CString::new(mountpoint)?;
+    let fstype = CString::new("EphMFS")?;
+
+    fs::create_dir_all(mountpoint)?;
+
+    // SAFETY: We are using libc::mount with valid C strings and appropriate arguments.
+    let ret = unsafe {
+        libc::mount(
+            fstype.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+
+    if ret != 0 {
+        // Keep the errno's ErrorKind so callers can distinguish failures
+        // (e.g., PermissionDenied when not root) while still adding context.
+        let err = std::io::Error::last_os_error();
+        return Err(std::io::Error::new(
+            err.kind(),
+            format!("Failed to mount EphMFS at {}: {}", mountpoint, err),
+        ));
+    }
+
+    Ok(())
 }
