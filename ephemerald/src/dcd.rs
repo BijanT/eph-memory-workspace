@@ -1,5 +1,6 @@
 use std::ffi::CString;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 const EPHMFS_MOUNTPOINT: &str = "/mnt/ephmfs";
@@ -219,6 +220,9 @@ fn mount_ephmfs(mountpoint: &str) -> std::io::Result<()> {
             format!("Failed to mount EphMFS at {}: {}", mountpoint, err),
         ));
     }
+
+    // Make sure users can access the mounted EphMFS filesystem.
+    fs::set_permissions(mountpoint, fs::Permissions::from_mode(0o1777))?;
 
     Ok(())
 }
