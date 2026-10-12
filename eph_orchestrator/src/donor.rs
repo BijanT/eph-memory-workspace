@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::qmp::QmpConnection;
-use crate::{EphAllocation, Vm};
+use crate::{EphAllocation, LogLevel, Vm, log};
 
 pub struct DonorState {
     /* Back-pointer to the Vm that owns this donor state */
@@ -312,7 +312,8 @@ impl DonorState {
 
         // All the VM communication is done, so we can safely print a debug
         // message without slowing things down.
-        println!(
+        log!(
+            LogLevel::Info,
             "Revoked ephemeral memory for donor {}: {} bytes",
             self.vm().qmp_socket_path.display(),
             revoke_size

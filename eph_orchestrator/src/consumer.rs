@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
-use crate::{EphAllocation, Vm, VmList, donor, qmp};
+use crate::{EphAllocation, LogLevel, Vm, VmList, donor, log, qmp};
 use eph_proto::{ConsumerCommand, ConsumerFunction};
 use vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
 
@@ -101,7 +101,8 @@ impl ConsumerState {
     pub fn handle_eph_mem_request(&self, vms: &VmList, size: u64) -> std::io::Result<()> {
         // The consumer allocation is not latency sensitive, so we're fine
         // printing here.
-        println!(
+        log!(
+            LogLevel::Info,
             "Consumer VM {} requesting ephemeral memory of size {}",
             self.vm().qmp_socket_path.display(),
             size
@@ -180,7 +181,8 @@ impl ConsumerState {
             )));
         }
 
-        println!(
+        log!(
+            LogLevel::Info,
             "Consumer VM {} successfully added dynamic capacity of size {}",
             self.vm().qmp_socket_path.display(),
             size_from_donor
@@ -534,7 +536,8 @@ pub fn consumer_listener_thread(
                 continue;
             }
         };
-        println!(
+        log!(
+            LogLevel::Info,
             "New consumer VM connected from CID {} on port {}",
             addr.cid(),
             addr.port()

@@ -5,7 +5,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
-use crate::{consumer, donor, qmp};
+use crate::{LogLevel, consumer, donor, log, qmp};
 use notify::Watcher;
 
 /// The main function for the vm_detection thread.
@@ -157,7 +157,8 @@ fn check_new_vm(
 
     let is_donor = new_vm.donor.is_some();
     let is_consumer = new_vm.consumer.is_some();
-    println!(
+    log!(
+        LogLevel::Info,
         "New VM detected: {} (donor: {}, consumer: {})",
         path.display(),
         is_donor,

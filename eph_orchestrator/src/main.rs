@@ -16,11 +16,30 @@ const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
 const QMP_WAIT_TIMEOUT_MS: u64 = 1000;
 const QMP_DIRECTORY: &str = "/tmp/ephmem/";
 
-static VERBOSE: OnceLock<bool> = OnceLock::new();
-
-fn verbose() -> bool {
-    VERBOSE.get().copied().unwrap_or(false)
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+enum LogLevel {
+    None,
+    Info,
+    Debug,
+    All,
 }
+
+static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
+
+fn log_level() -> LogLevel {
+    LOG_LEVEL.get().copied().unwrap_or(LogLevel::Info)
+}
+
+// Logs a message if `level` is enabled. The format string and its arguments are
+// only evaluated if the message will actually be printed.
+macro_rules! log {
+    ($level:expr, $($arg:tt)*) => {
+        if $level <= $crate::log_level() {
+            println!($($arg)*);
+        }
+    };
+}
+pub(crate) use log;
 
 // To prevent deadlocks, the following lock ordering should be followed:
 // 1. VmList lock (read or write)
@@ -88,15 +107,14 @@ impl Vm {
         }
         let donor_duration = donor_start.elapsed();
 
-        if verbose() {
-            println!(
-                "size={} consumer_us={} abandon_us={} donor_us={}",
-                size,
-                consumer_duration.as_micros(),
-                abandon_duration.as_micros(),
-                donor_duration.as_micros()
-            );
-        }
+        log!(
+            LogLevel::Debug,
+            "size={} consumer_us={} abandon_us={} donor_us={}",
+            size,
+            consumer_duration.as_micros(),
+            abandon_duration.as_micros(),
+            donor_duration.as_micros()
+        );
     }
 
     /// Returns the Vm at the specified path, if it exists and is a consumer VM.
@@ -130,7 +148,11 @@ impl Vm {
         };
 
         for vm in removed_vms {
-            println!("Removing VM: {}", vm.qmp_socket_path.display());
+            log!(
+                LogLevel::Info,
+                "Removing VM: {}",
+                vm.qmp_socket_path.display()
+            );
 
             // If a consumer VM is leaving, release all its allocations.
             if let Some(consumer) = vm.consumer.as_ref() {
@@ -313,9 +335,9 @@ type VmList = RwLock<BTreeMap<PathBuf, Arc<Vm>>>;
 fn clap_args() -> clap::ArgMatches {
     clap::Command::new("eph_orchestrator")
         .arg(
-            clap::arg!(--verbose "Enable verbose output")
-                .short('v')
-                .action(clap::ArgAction::SetTrue),
+            clap::arg!(-l --"log-level" <LEVEL> "Set the log level")
+                .value_parser(clap::value_parser!(LogLevel))
+                .default_value("info"),
         )
         .get_matches()
 }
@@ -329,7 +351,8 @@ fn main() {
     );
 
     let matches = clap_args();
-    let _ = VERBOSE.set(matches.get_flag("verbose"));
+    let log_level = *matches.get_one::<LogLevel>("log-level").unwrap();
+    let _ = LOG_LEVEL.set(log_level);
 
     let vms = Arc::new(RwLock::new(BTreeMap::new()));
 

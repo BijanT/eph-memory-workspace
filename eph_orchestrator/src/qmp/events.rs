@@ -5,8 +5,8 @@ use std::sync::mpsc;
 
 use serde::Deserialize;
 
-use crate::Vm;
 use crate::qmp::types;
+use crate::{LogLevel, Vm, log};
 
 pub struct QmpEvent {
     /// The path to the QMP socket of the VM that sent the event.
@@ -103,7 +103,8 @@ fn handle_event(
             });
         }
         _ => {
-            println!(
+            log!(
+                LogLevel::All,
                 "Received unhandled event '{}' from VM at '{}'",
                 event_name,
                 vm_path.display()
