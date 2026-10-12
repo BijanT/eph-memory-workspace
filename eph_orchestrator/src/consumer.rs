@@ -322,7 +322,10 @@ impl ConsumerState {
         }
 
         let vm = self.vm();
+        let lock_start = std::time::Instant::now();
         let mut qmp = vm.qmp.lock().unwrap();
+        let lock_elapsed = lock_start.elapsed();
+        let message_start = std::time::Instant::now();
         if let Err(e) = qmp.cxl_release_dynamic_capacity(&self.qom_path, offset, allocation.size())
         {
             let err = std::io::Error::other(format!(
@@ -335,6 +338,13 @@ impl ConsumerState {
             eprintln!("{}", err);
             ret_val = Err(err);
         }
+        log!(
+            LogLevel::Debug,
+            "Sent CXL release dynamic capacity command at CID {} in {:?}. Lock acquired in {:?}",
+            self.vsock_cid,
+            message_start.elapsed(),
+            lock_elapsed
+        );
         drop(qmp);
 
         let manual_remove = if ret_val.is_err() {
