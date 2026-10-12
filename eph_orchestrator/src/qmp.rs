@@ -77,6 +77,8 @@ impl QmpConnection {
             self.stream.write_all(b"\n")?;
         }
         log!(LogLevel::Debug, "{} QMP command written", now_str());
+        self.stream.flush()?;
+        log!(LogLevel::Debug, "{} QMP command flushed", now_str());
 
         let response = self
             .response_rx
