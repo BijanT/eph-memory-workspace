@@ -153,6 +153,14 @@ impl ConsumerState {
             )));
         }
 
+        log!(
+            LogLevel::Debug,
+            "Consumer VM {} adding ephemeral memory at offset {} of size {}",
+            self.vm().qmp_socket_path.display(),
+            rsvd_offset,
+            size_from_donor
+        );
+
         // Wait for the confirmation from the consumer that the dynamic capacity
         // has been added.
         // 1000ms should be plenty of time to for the consumer to process the
