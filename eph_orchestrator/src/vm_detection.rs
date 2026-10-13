@@ -3,7 +3,7 @@
 
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use crate::{LogLevel, consumer, donor, log, qmp};
 use notify::Watcher;
@@ -144,6 +144,7 @@ fn check_new_vm(
         crate::Vm {
             qmp_socket_path: path.to_path_buf(),
             qmp: Mutex::new(connection),
+            exited: OnceLock::new(),
             donor: donor_state,
             consumer: consumer_state,
         }

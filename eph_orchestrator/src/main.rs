@@ -58,6 +58,8 @@ struct Vm {
     qmp_socket_path: PathBuf,
     /* The connection to the QMP socket */
     qmp: Mutex<qmp::QmpConnection>,
+    /* If set, the VM has exited, but the Vm struct is still in use */
+    exited: OnceLock<()>,
     /* Internal state for DonorVMs */
     donor: Option<DonorState>,
     /* Internal state for ConsumerVMs */
@@ -75,6 +77,7 @@ impl Vm {
         // If the consumer VM is gone, we can just skip the bookkeeping.
         let consumer_start = std::time::Instant::now();
         if let Some(consumer) = consumer
+            && !consumer.exited.get().is_some()
             && consumer.consumer.is_some()
         {
             let consumer_state = consumer.consumer.as_ref().unwrap();
@@ -100,6 +103,7 @@ impl Vm {
         // If the donor VM is gone, we can just skip the returning the memory
         let donor_start = std::time::Instant::now();
         if let Some(donor) = donor
+            && !donor.exited.get().is_some()
             && donor.donor.is_some()
         {
             let donor_state = donor.donor.as_ref().unwrap();
@@ -153,6 +157,11 @@ impl Vm {
                 "Removing VM: {}",
                 vm.qmp_socket_path.display()
             );
+
+            // At this point the VM has been removed from the VmList, and this
+            // is the only place that exited is set, so unwrap should be safe
+            // here.
+            vm.exited.set(()).unwrap();
 
             // If a consumer VM is leaving, release all its allocations.
             if let Some(consumer) = vm.consumer.as_ref() {
