@@ -341,6 +341,12 @@ impl DonorState {
             allocs
         };
 
+        log!(
+            LogLevel::Debug,
+            "Releasing {} ephemeral memory allocations for donor {}",
+            allocs.len(),
+            self.vm().qmp_socket_path.display()
+        );
         for a in allocs {
             Vm::return_eph_memory_from_consumer(&a);
         }
