@@ -429,6 +429,13 @@ impl ConsumerState {
         let mut notify = false;
 
         for extent in extents {
+            log!(
+                LogLevel::Debug,
+                "Consumer VM {} released ephemeral memory at offset {} of size {}",
+                self.vm().qmp_socket_path.display(),
+                extent.offset,
+                extent.len
+            );
             if let Some(allocation) = mut_state.allocated_areas.get(&extent.offset)
                 && allocation.size() == extent.len
             {
