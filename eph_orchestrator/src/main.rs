@@ -12,7 +12,6 @@ use std::thread;
 use consumer::ConsumerState;
 use donor::DonorState;
 
-const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
 const QMP_WAIT_TIMEOUT_MS: u64 = 1000;
 const QMP_DIRECTORY: &str = "/tmp/ephmem/";
 
@@ -331,7 +330,7 @@ impl EphAllocation {
 
     // This could be replaced with a constant, but this allows for future flexibility.
     pub fn size(&self) -> u64 {
-        EPH_MEM_DONATION_GRANULARITY
+        eph_proto::EPH_MEM_DONATION_GRANULARITY
     }
 
     pub fn is_committed(&self) -> bool {
@@ -394,7 +393,7 @@ fn main() {
     println!("Starting eph_orchestrator...");
 
     assert!(
-        EPH_MEM_DONATION_GRANULARITY.is_power_of_two(),
+        eph_proto::EPH_MEM_DONATION_GRANULARITY.is_power_of_two(),
         "EPH_MEM_DONATION_GRANULARITY must be a power of two"
     );
 

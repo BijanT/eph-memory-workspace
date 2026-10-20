@@ -115,7 +115,8 @@ impl ConsumerState {
         );
 
         // Make sure the size is EPH_MEM_DONATION_GRANULARITY aligned
-        let Some(size) = size.checked_next_multiple_of(crate::EPH_MEM_DONATION_GRANULARITY) else {
+        let Some(size) = size.checked_next_multiple_of(eph_proto::EPH_MEM_DONATION_GRANULARITY)
+        else {
             return Err(std::io::Error::other(
                 "Requested size is too large to align to donation granularity",
             ));
@@ -215,7 +216,7 @@ impl ConsumerState {
             LogLevel::Info,
             "Consumer VM {} successfully added dynamic capacity of size {}",
             self.vm().qmp_socket_path.display(),
-            live.len() as u64 * crate::EPH_MEM_DONATION_GRANULARITY
+            live.len() as u64 * eph_proto::EPH_MEM_DONATION_GRANULARITY
         );
 
         Ok(())
@@ -243,7 +244,7 @@ impl ConsumerState {
             if rsvd_allocs.is_empty() {
                 break;
             }
-            let alloc_size = rsvd_allocs.len() as u64 * crate::EPH_MEM_DONATION_GRANULARITY;
+            let alloc_size = rsvd_allocs.len() as u64 * eph_proto::EPH_MEM_DONATION_GRANULARITY;
             allocations.append(&mut rsvd_allocs);
 
             remaining_size -= alloc_size;
@@ -261,7 +262,7 @@ impl ConsumerState {
         let mut first_region = true;
         let mut broke_early = false;
         let size = if size > self.size { self.size } else { size };
-        let size = size & !(crate::EPH_MEM_DONATION_GRANULARITY - 1);
+        let size = size & !(eph_proto::EPH_MEM_DONATION_GRANULARITY - 1);
         let mut allocations = Vec::new();
         let mut mut_state = self.mut_state.lock().unwrap();
 
@@ -272,7 +273,7 @@ impl ConsumerState {
         // If there are no allocated areas, the whole device is free, so just
         // reserve from the start.
         if mut_state.allocated_areas.is_empty() {
-            for offset in (0..size).step_by(crate::EPH_MEM_DONATION_GRANULARITY as usize) {
+            for offset in (0..size).step_by(eph_proto::EPH_MEM_DONATION_GRANULARITY as usize) {
                 let new_alloc = Arc::new(EphAllocation::new(offset, Arc::downgrade(&self.vm())));
                 mut_state.allocated_areas.insert(offset, new_alloc.clone());
                 allocations.push(new_alloc);
@@ -319,7 +320,7 @@ impl ConsumerState {
 
         // largest_gap may be smaller than the requested size here. That OK.
         // Just make sure It's at least as big as the allocation granularity.
-        largest_gap &= !(crate::EPH_MEM_DONATION_GRANULARITY - 1);
+        largest_gap &= !(eph_proto::EPH_MEM_DONATION_GRANULARITY - 1);
         if largest_gap == 0 {
             return Vec::new();
         }
@@ -330,7 +331,7 @@ impl ConsumerState {
         };
 
         for offset in (largest_gap_offset..largest_gap_offset + size)
-            .step_by(crate::EPH_MEM_DONATION_GRANULARITY as usize)
+            .step_by(eph_proto::EPH_MEM_DONATION_GRANULARITY as usize)
         {
             let new_alloc = Arc::new(EphAllocation::new(offset, Arc::downgrade(&self.vm())));
             mut_state.allocated_areas.insert(offset, new_alloc.clone());

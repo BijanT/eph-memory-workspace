@@ -102,7 +102,7 @@ impl DonorState {
 
         // If granted_size is somehow not a multiple of the donation
         // granularity, round it down and return the excess.
-        let excess = granted_size % crate::EPH_MEM_DONATION_GRANULARITY;
+        let excess = granted_size % eph_proto::EPH_MEM_DONATION_GRANULARITY;
         let granted_size = granted_size - excess;
 
         // Has memory been revoked before we had a chance to use it?
@@ -115,7 +115,7 @@ impl DonorState {
         };
 
         let final_size = granted_size - to_revoke;
-        let first_failed_idx = final_size / crate::EPH_MEM_DONATION_GRANULARITY;
+        let first_failed_idx = final_size / eph_proto::EPH_MEM_DONATION_GRANULARITY;
         for id in &alloc_ids[first_failed_idx as usize..] {
             region.allocations.remove(id);
         }
@@ -141,7 +141,7 @@ impl DonorState {
             if let Some(donor_state) = &vm.donor {
                 let mut donor_mut_state = donor_state.mut_state.lock().unwrap();
                 for region in donor_mut_state.donatable_regions.iter_mut() {
-                    if region.size - region.donated < crate::EPH_MEM_DONATION_GRANULARITY {
+                    if region.size - region.donated < eph_proto::EPH_MEM_DONATION_GRANULARITY {
                         // This region is fully donated, skip it
                         continue;
                     }
@@ -149,9 +149,9 @@ impl DonorState {
                     // donation granularity.
                     let size_to_allocate = std::cmp::min(size, region.size - region.donated);
                     let size_to_allocate =
-                        size_to_allocate & !(crate::EPH_MEM_DONATION_GRANULARITY - 1);
+                        size_to_allocate & !(eph_proto::EPH_MEM_DONATION_GRANULARITY - 1);
                     region.donated += size_to_allocate;
-                    for i in 0..(size_to_allocate / crate::EPH_MEM_DONATION_GRANULARITY) {
+                    for i in 0..(size_to_allocate / eph_proto::EPH_MEM_DONATION_GRANULARITY) {
                         let rsvd_alloc = rsvd_allocs[i as usize].clone();
                         region.allocations.insert(rsvd_alloc.id, rsvd_alloc);
                     }
@@ -175,14 +175,16 @@ impl DonorState {
             let Some((donor_vm, qom_path, request_size)) = Self::allocate_eph_memory_inner(
                 &last_path,
                 vms,
-                crate::EPH_MEM_DONATION_GRANULARITY * (rsvd_allocs.len() - backed_allocs) as u64,
+                eph_proto::EPH_MEM_DONATION_GRANULARITY
+                    * (rsvd_allocs.len() - backed_allocs) as u64,
                 &rsvd_allocs[backed_allocs..],
             ) else {
                 return backed_allocs;
             };
             let donor_state = donor_vm.donor.as_ref().unwrap();
             let alloc_ids = rsvd_allocs[backed_allocs
-                ..backed_allocs + (request_size / crate::EPH_MEM_DONATION_GRANULARITY) as usize]
+                ..backed_allocs
+                    + (request_size / eph_proto::EPH_MEM_DONATION_GRANULARITY) as usize]
                 .iter()
                 .map(|a| a.id)
                 .collect::<Vec<u64>>();
@@ -217,7 +219,7 @@ impl DonorState {
             if to_revoke > 0 {
                 let _ = donor_state.return_eph_memory(&qom_path, to_revoke);
             }
-            let num_granted = (granted_size / crate::EPH_MEM_DONATION_GRANULARITY) as usize;
+            let num_granted = (granted_size / eph_proto::EPH_MEM_DONATION_GRANULARITY) as usize;
             let mut abandoned_allocs = Vec::new();
             for rsvd_alloc in &rsvd_allocs[backed_allocs..backed_allocs + num_granted] {
                 if !rsvd_alloc.commit_allocation(Arc::downgrade(&donor_vm), qom_path.clone()) {
@@ -254,7 +256,7 @@ impl DonorState {
     }
 
     pub fn return_and_bookkeep_eph_memory(&self, qom_path: &str, alloc_ids: &[u64]) {
-        let return_size = alloc_ids.len() as u64 * crate::EPH_MEM_DONATION_GRANULARITY;
+        let return_size = alloc_ids.len() as u64 * eph_proto::EPH_MEM_DONATION_GRANULARITY;
         if self.return_eph_memory(qom_path, return_size).is_ok() {
             for alloc_id in alloc_ids {
                 self.bookkeep_returned_eph_memory(qom_path, *alloc_id);
@@ -298,14 +300,14 @@ impl DonorState {
     pub fn revoke_eph_memory(&self, qom_path: &str, revoke_size: u64) -> std::io::Result<()> {
         // Keep revoke_size donation granularity aligned
         let Some(revoke_size) =
-            revoke_size.checked_next_multiple_of(crate::EPH_MEM_DONATION_GRANULARITY)
+            revoke_size.checked_next_multiple_of(eph_proto::EPH_MEM_DONATION_GRANULARITY)
         else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "Revoke size {} is too large to align to donation granularity {}",
                     revoke_size,
-                    crate::EPH_MEM_DONATION_GRANULARITY
+                    eph_proto::EPH_MEM_DONATION_GRANULARITY
                 ),
             ));
         };

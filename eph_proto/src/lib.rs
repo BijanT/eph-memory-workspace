@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+pub const EPH_MEM_DONATION_GRANULARITY: u64 = 256 * 1024 * 1024; // 256 MiB
 pub const VSOCK_PORT: u32 = 1848;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
