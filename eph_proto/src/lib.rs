@@ -12,14 +12,23 @@ pub enum ConsumerFunction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-// Consumer commands are much simpler than QMP. They only have a function name
-// and, optionally, a size and offset arguments.
+// Consumer commands are much simpler than QMP.
+// They have the following fields:
+// `function`: The type of command being send.
+// `size`: The size of memory corresponsing to the command, if applicable.
+// `offset`: The offset of the memory corresponding to the command, if applicable.
+// `id`: A unique identifier for the command, if applicable.
+// `more`: Indicates if there are more commands to follow, if applicable.
 pub struct ConsumerCommand {
     pub function: ConsumerFunction,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub more: Option<bool>,
 }
 
 impl ConsumerCommand {
@@ -28,7 +37,21 @@ impl ConsumerCommand {
             function,
             size,
             offset,
+            id: None,
+            more: None,
         }
+    }
+
+    pub fn with_id(&self, id: Option<u64>) -> Self {
+        let mut cmd = self.clone();
+        cmd.id = id;
+        cmd
+    }
+
+    pub fn with_more(&self, more: bool) -> Self {
+        let mut cmd = self.clone();
+        cmd.more = Some(more);
+        cmd
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {

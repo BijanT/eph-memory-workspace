@@ -69,54 +69,82 @@ struct Vm {
 impl Vm {
     // Return ephemeral memory from a consumer VM that has been committed back
     // to the donor VM. Does the necessary bookkeeping in both the consumer and donor state.
-    pub fn return_eph_memory_from_consumer(alloc: &Arc<EphAllocation>) {
-        let consumer = alloc.consumer_vm();
-        let consumer_offset = alloc.consumer_offset;
-        let alloc_id = alloc.id;
+    pub fn return_eph_memory_from_consumer(allocs: &[Arc<EphAllocation>]) {
+        // Mapping of each consumer/donor to a list of its allocations to return
+        let mut consumer_allocs: BTreeMap<PathBuf, Vec<Arc<EphAllocation>>> = BTreeMap::new();
+        let mut donor_allocs: BTreeMap<(PathBuf, String), Vec<Arc<EphAllocation>>> =
+            BTreeMap::new();
+        // Mapping of the PathBuf to the corresponsind VMs
+        let mut vm_map: BTreeMap<PathBuf, Arc<Vm>> = BTreeMap::new();
 
-        // If the consumer VM is gone, we can just skip the bookkeeping.
-        let consumer_start = std::time::Instant::now();
-        if let Some(consumer) = consumer
-            && !consumer.exited.get().is_some()
-            && consumer.consumer.is_some()
-        {
-            let consumer_state = consumer.consumer.as_ref().unwrap();
-            let _ = consumer_state.release_reserved_memory(consumer_offset);
+        // Group allocations by consumer and donor, and build a map of the VMs
+        let organize_start = std::time::Instant::now();
+        for alloc in allocs {
+            let consumer = alloc.consumer_vm();
+            if let Some(consumer) = consumer
+                && consumer.exited.get().is_none()
+                && consumer.consumer.is_some()
+            {
+                let consumer_path = consumer.qmp_socket_path.clone();
+                vm_map.insert(consumer_path.clone(), consumer.clone());
+                consumer_allocs
+                    .entry(consumer_path)
+                    .or_default()
+                    .push(alloc.clone());
+            }
+
+            let Some(donor_alloc) = alloc.abandon_or_take_donor() else {
+                continue;
+            };
+            let donor = donor_alloc.donor_vm();
+            if let Some(donor) = donor
+                && donor.exited.get().is_none()
+                && donor.donor.is_some()
+            {
+                let donor_path = donor.qmp_socket_path.clone();
+                vm_map.insert(donor_path.clone(), donor.clone());
+                donor_allocs
+                    .entry((donor_path, donor_alloc.donor_qom_path.clone()))
+                    .or_default()
+                    .push(alloc.clone());
+            }
         }
+        let organize_duration = organize_start.elapsed();
+
+        // Release the allocations on the consumer side. This is done in
+        // parallel by consumer VM.
+        let consumer_start = std::time::Instant::now();
+        let consumer_groups = consumer_allocs.into_iter().collect::<Vec<_>>();
+        for_each_parallel(&consumer_groups, |(vm_path, allocs)| {
+            let offsets = allocs
+                .iter()
+                .map(|alloc| alloc.consumer_offset)
+                .collect::<Vec<_>>();
+            // Safe: a path only gets into consumer_allocs together with its
+            // vm_map entry, after checking that the VM has consumer state
+            let consumer_state = vm_map[vm_path].consumer.as_ref().unwrap();
+            let _ = consumer_state.release_reserved_memory(&offsets);
+        });
         let consumer_duration = consumer_start.elapsed();
-
-        // If a donor has already committed to this allocation, take its info
-        // and return the memory below. Otherwise, mark the allocation
-        // abandoned: if a donor is concurrently in the process of committing
-        // to it, commit_allocation() will notice and return the memory
-        // itself instead of leaking it.
-        let abandon_start = std::time::Instant::now();
-        let Some(donor_alloc) = alloc.abandon_or_take_donor() else {
-            return;
-        };
-        let abandon_duration = abandon_start.elapsed();
-
-        let donor = donor_alloc.donor_vm();
-        let donor_qom_path = donor_alloc.donor_qom_path.clone();
-        let size = alloc.size();
 
         // If the donor VM is gone, we can just skip the returning the memory
         let donor_start = std::time::Instant::now();
-        if let Some(donor) = donor
-            && !donor.exited.get().is_some()
-            && donor.donor.is_some()
-        {
-            let donor_state = donor.donor.as_ref().unwrap();
-            donor_state.return_and_bookkeep_eph_memory(&donor_qom_path, alloc_id, size);
-        }
+        let donor_groups = donor_allocs.into_iter().collect::<Vec<_>>();
+        for_each_parallel(&donor_groups, |((vm_path, donor_qom_path), allocs)| {
+            let ids = allocs.iter().map(|alloc| alloc.id).collect::<Vec<_>>();
+            // Safe: a path only gets into donor_allocs together with its
+            // vm_map entry, after checking that the VM has donor state
+            let donor_state = vm_map[vm_path].donor.as_ref().unwrap();
+            donor_state.return_and_bookkeep_eph_memory(donor_qom_path, &ids);
+        });
         let donor_duration = donor_start.elapsed();
 
         log!(
             LogLevel::Debug,
-            "size={} consumer_us={} abandon_us={} donor_us={}",
-            size,
+            "return_eph_mem_from_consumer: # allocs={} organize_us={} consumer_us={} donor_us={}",
+            allocs.len(),
+            organize_duration.as_micros(),
             consumer_duration.as_micros(),
-            abandon_duration.as_micros(),
             donor_duration.as_micros()
         );
     }
@@ -183,10 +211,6 @@ impl Vm {
 }
 
 struct EphAllocation {
-    // The originally requested/reserved size of the allocation. Fixed at
-    // creation time; once a donor is found, `size()` prefers the donor's
-    // `final_size` instead.
-    initial_size: u64,
     // The offset in the consumer device the allocation is mapped to.
     consumer_offset: u64,
     // The Consumer VM that has requested the allocation.
@@ -225,16 +249,12 @@ struct DonorAllocation {
     donor_vm: Weak<Vm>,
     // The QOM path to the memory device on the donor this allocation is from.
     donor_qom_path: String,
-    // The actual size granted by the donor, which may be less than
-    // `EphAllocation::initial_size`.
-    final_size: u64,
 }
 
 static ALLOC_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 impl EphAllocation {
-    pub fn new(size: u64, consumer_offset: u64, consumer_vm: Weak<Vm>) -> Self {
+    pub fn new(consumer_offset: u64, consumer_vm: Weak<Vm>) -> Self {
         Self {
-            initial_size: size,
             consumer_offset,
             consumer_vm,
             id: ALLOC_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -252,17 +272,11 @@ impl EphAllocation {
     // (e.g. the consumer VM exited while this commit was in flight), in
     // which case the caller must immediately return the donor's memory
     // instead of treating this as a live allocation.
-    pub fn commit_allocation(
-        &self,
-        donor_vm: Weak<Vm>,
-        donor_qom_path: String,
-        final_size: u64,
-    ) -> bool {
+    pub fn commit_allocation(&self, donor_vm: Weak<Vm>, donor_qom_path: String) -> bool {
         self.donor_info
             .set(DonorAllocation {
                 donor_vm,
                 donor_qom_path,
-                final_size,
             })
             .ok()
             .expect("EphAllocation's donor_info should only be set once");
@@ -307,16 +321,17 @@ impl EphAllocation {
                 *state = AllocState::Abandoned;
                 self.donor_info.get()
             }
-            AllocState::PendingCommit | AllocState::Abandoned => None,
+            AllocState::PendingCommit => {
+                *state = AllocState::Abandoned;
+                None
+            }
+            AllocState::Abandoned => None,
         }
     }
 
-    // The best currently-known size of the allocation: the donor's granted
-    // size once a donor has confirmed, otherwise the originally requested size.
+    // This could be replaced with a constant, but this allows for future flexibility.
     pub fn size(&self) -> u64 {
-        self.donor_info
-            .get()
-            .map_or(self.initial_size, |d| d.final_size)
+        EPH_MEM_DONATION_GRANULARITY
     }
 
     pub fn is_committed(&self) -> bool {
@@ -330,6 +345,17 @@ impl EphAllocation {
 
     pub fn consumer_vm(&self) -> Option<Arc<Vm>> {
         self.consumer_vm.upgrade()
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.dcd_set.get().is_some() && self.is_committed() && !self.is_release_requested()
+    }
+
+    pub fn to_extent(&self) -> qmp::types::CxlDynamicCapacityExtent {
+        qmp::types::CxlDynamicCapacityExtent {
+            offset: self.consumer_offset,
+            len: self.size(),
+        }
     }
 }
 
@@ -349,6 +375,19 @@ fn clap_args() -> clap::ArgMatches {
                 .default_value("info"),
         )
         .get_matches()
+}
+
+fn for_each_parallel<T: Sync>(items: &[T], f: impl Fn(&T) + Sync) {
+    let Some((first, rest)) = items.split_first() else {
+        return;
+    };
+    std::thread::scope(|s| {
+        let f = &f;
+        for item in rest {
+            s.spawn(move || f(item));
+        }
+        f(first);
+    })
 }
 
 fn main() {

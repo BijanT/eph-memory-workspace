@@ -144,8 +144,7 @@ impl QmpConnection {
     pub fn cxl_add_dynamic_capacity(
         &mut self,
         qom_path: &str,
-        offset: u64,
-        len: u64,
+        extents: &[types::CxlDynamicCapacityExtent],
     ) -> std::io::Result<()> {
         let args = types::CxlAddDynamicCapacityArgs {
             path: qom_path.to_string(),
@@ -153,7 +152,7 @@ impl QmpConnection {
             selection_policy: types::CxlExtentSelectionPolicy::Prescriptive,
             region: 0,
             tag: None,
-            extents: vec![types::CxlDynamicCapacityExtent { offset, len }],
+            extents: extents.to_vec(),
         };
         let command = QmpCommand::with_arguments("cxl-add-dynamic-capacity", args)?;
         self.send(&command)?;
@@ -163,8 +162,7 @@ impl QmpConnection {
     pub fn cxl_release_dynamic_capacity(
         &mut self,
         qom_path: &str,
-        offset: u64,
-        len: u64,
+        extents: &[types::CxlDynamicCapacityExtent],
     ) -> std::io::Result<()> {
         let args = types::CxlReleaseDynamicCapacityArgs {
             path: qom_path.to_string(),
@@ -174,7 +172,7 @@ impl QmpConnection {
             sanitize_on_release: None,
             region: 0,
             tag: None,
-            extents: vec![types::CxlDynamicCapacityExtent { offset, len }],
+            extents: extents.to_vec(),
         };
         let command = QmpCommand::with_arguments("cxl-release-dynamic-capacity", args)?;
         self.send(&command)?;

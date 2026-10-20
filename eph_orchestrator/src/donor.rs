@@ -1,5 +1,6 @@
 //! Functions for interacting with DonorVMs
 
+use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -26,19 +27,6 @@ impl DonorMutState {
             .iter_mut()
             .find(|region| region.path == qom_path)
     }
-
-    /// Finds the donatable region matching `qom_path`, and the index within
-    /// it of the allocation matching `alloc_id`.
-    fn find_alloc(
-        &mut self,
-        qom_path: &str,
-        alloc_id: u64,
-    ) -> Option<(&mut DonatableRegion, usize)> {
-        self.find_region(qom_path).and_then(|region| {
-            let pos = region.allocations.iter().position(|a| a.id == alloc_id)?;
-            Some((region, pos))
-        })
-    }
 }
 
 pub struct DonatableRegion {
@@ -54,7 +42,7 @@ pub struct DonatableRegion {
     // so we can return the excess before confirming the allocation
     revoked_owed: u64,
     /* The allocations donated from this region */
-    allocations: Vec<Arc<EphAllocation>>,
+    allocations: BTreeMap<u64, Arc<EphAllocation>>,
 }
 
 impl DonorState {
@@ -87,30 +75,35 @@ impl DonorState {
 
     // Does the bookkeeping to convert a reserved allocation into a confirmed
     // allocation after getting ephemeral memory from the donor.
-    // Returns a tuple of the actual size of the allocation and the amount of
-    // ephemeral data that we just got from the donor that we need to return
+    // Returns a tuple of the size of usable ephemeral memory and the amount of
+    // ephemeral memory that we just got from the donor that we need to return
     // immediately.
     fn handle_reserved_alloc(
         &self,
         qom_path: &str,
-        alloc_id: u64,
+        alloc_ids: &[u64],
+        requested_size: u64,
         granted_size: u64,
     ) -> (u64, u64) {
         let mut donor_mut_state = self.mut_state.lock().unwrap();
-        let Some((region, pos)) = donor_mut_state.find_alloc(qom_path, alloc_id) else {
+        let Some(region) = donor_mut_state.find_region(qom_path) else {
             // We should never actually get here, since this function should
             // only be called if there is a reserved allocation.
             return (0, 0);
         };
-        let alloc = region.allocations[pos].clone();
 
-        if granted_size > alloc.initial_size {
+        if granted_size > requested_size {
             eprintln!(
                 "Warning: Donor granted more memory than was requested. Requested {}, granted {}",
-                alloc.initial_size, granted_size
+                requested_size, granted_size
             );
         }
-        let granted_size = std::cmp::min(granted_size, alloc.initial_size);
+        let granted_size = std::cmp::min(granted_size, requested_size);
+
+        // If granted_size is somehow not a multiple of the donation
+        // granularity, round it down and return the excess.
+        let excess = granted_size % crate::EPH_MEM_DONATION_GRANULARITY;
+        let granted_size = granted_size - excess;
 
         // Has memory been revoked before we had a chance to use it?
         let to_revoke = if region.revoked_owed > 0 {
@@ -122,10 +115,9 @@ impl DonorState {
         };
 
         let final_size = granted_size - to_revoke;
-        if final_size == 0 {
-            // If we don't actually have any memory to use, remove the
-            // allocation from the list.
-            region.allocations.remove(pos);
+        let first_failed_idx = final_size / crate::EPH_MEM_DONATION_GRANULARITY;
+        for id in &alloc_ids[first_failed_idx as usize..] {
+            region.allocations.remove(id);
         }
         // Even though we incremented region.donated when we first
         // reserved the memory, we don't decrement it now if
@@ -135,54 +127,72 @@ impl DonorState {
         // our request. Additionally, when a donor uses its donatable
         // memory for itself, it will never again be available for
         // donation.
-        (final_size, to_revoke)
+        (final_size, to_revoke + excess)
     }
 
     fn allocate_eph_memory_inner(
         path_start: &Path,
         vms: &crate::VmList,
-        rsvd_alloc: &Arc<EphAllocation>,
-    ) -> Option<(Arc<Vm>, String)> {
+        size: u64,
+        rsvd_allocs: &[Arc<EphAllocation>],
+    ) -> Option<(Arc<Vm>, String, u64)> {
         let vms = vms.read().unwrap();
         for (_path, vm) in vms.range::<Path, _>((Excluded(path_start), Unbounded)) {
             if let Some(donor_state) = &vm.donor {
                 let mut donor_mut_state = donor_state.mut_state.lock().unwrap();
                 for region in donor_mut_state.donatable_regions.iter_mut() {
-                    let size = rsvd_alloc.initial_size;
-                    if region.size - region.donated >= size {
-                        // Allocate memory from this region
-                        region.donated += size;
-                        region.allocations.push(rsvd_alloc.clone());
-                        return Some((vm.clone(), region.path.clone()));
+                    if region.size - region.donated < crate::EPH_MEM_DONATION_GRANULARITY {
+                        // This region is fully donated, skip it
+                        continue;
                     }
+                    // Allocate memory from this region, rounding down to the
+                    // donation granularity.
+                    let size_to_allocate = std::cmp::min(size, region.size - region.donated);
+                    let size_to_allocate =
+                        size_to_allocate & !(crate::EPH_MEM_DONATION_GRANULARITY - 1);
+                    region.donated += size_to_allocate;
+                    for i in 0..(size_to_allocate / crate::EPH_MEM_DONATION_GRANULARITY) {
+                        let rsvd_alloc = rsvd_allocs[i as usize].clone();
+                        region.allocations.insert(rsvd_alloc.id, rsvd_alloc);
+                    }
+                    return Some((vm.clone(), region.path.clone(), size_to_allocate));
                 }
             }
         }
         None
     }
 
-    // Takes a EphAllocation that has been reserved by a consumer, but not
-    // yet committed, and actually allocates the memory from a donor.
-    // Updates the passed in EphAllocation with the donor information.
-    // Return true is successful and false otherwise.
-    pub fn allocate_eph_memory(vms: &crate::VmList, rsvd_alloc: &Arc<EphAllocation>) -> bool {
+    // Takes EphAllocations reserved by a consumer, but not yet committed, and
+    // actually allocates the memory from a donor. Updates the passed in
+    // EphAllocation with the donor information if that allocation is backed.
+    // Allocations are backed in the order they are provided in rsvd_allocs.
+    // Returns the number of allocations that have been processed. They will
+    // either be committed or abandoned.
+    pub fn allocate_eph_memory(vms: &crate::VmList, rsvd_allocs: &[Arc<EphAllocation>]) -> usize {
         let mut last_path = PathBuf::new();
-        let rsvd_size = rsvd_alloc.initial_size;
-        let alloc_id = rsvd_alloc.id;
-        loop {
-            let Some((donor_vm, qom_path)) =
-                Self::allocate_eph_memory_inner(&last_path, vms, rsvd_alloc)
-            else {
-                return false;
+        let mut backed_allocs = 0;
+        while backed_allocs < rsvd_allocs.len() {
+            let Some((donor_vm, qom_path, request_size)) = Self::allocate_eph_memory_inner(
+                &last_path,
+                vms,
+                crate::EPH_MEM_DONATION_GRANULARITY * (rsvd_allocs.len() - backed_allocs) as u64,
+                &rsvd_allocs[backed_allocs..],
+            ) else {
+                return backed_allocs;
             };
             let donor_state = donor_vm.donor.as_ref().unwrap();
+            let alloc_ids = rsvd_allocs[backed_allocs
+                ..backed_allocs + (request_size / crate::EPH_MEM_DONATION_GRANULARITY) as usize]
+                .iter()
+                .map(|a| a.id)
+                .collect::<Vec<u64>>();
 
-            // Send a QMP command requesting rsvd_size bytes from the donor.
+            // Send a QMP command requesting request_size bytes from the donor.
             let Ok(size) = donor_vm
                 .qmp
                 .lock()
                 .unwrap()
-                .eph_mem_donate_capacity(&qom_path, rsvd_size)
+                .eph_mem_donate_capacity(&qom_path, request_size)
                 .inspect_err(|e| eprintln!("QMP error while getting eph memory: {}", e))
             else {
                 // If the QMP command fails, handle the failed allocation and
@@ -190,17 +200,15 @@ impl DonorState {
                 // This will make it so this donor can no longer donate memory.
                 // That's fine since the QMP connection is broken, don't waste
                 // time trying to use it again.
-                donor_state.handle_reserved_alloc(&qom_path, alloc_id, 0);
+                donor_state.handle_reserved_alloc(&qom_path, &alloc_ids, request_size, 0);
                 last_path = donor_vm.qmp_socket_path.clone();
                 continue;
             };
 
-            // If the donor accepts the request, confirm the allocation and
-            // return the size allocated. Ideally, we would keep trying other
-            // donors until we found one that can satisfy our full demand, but
-            // that will be for another time.
+            // If the donor accepts the request, confirm as many EphAllocations
+            // as we can with the granted size.
             let (granted_size, to_revoke) =
-                donor_state.handle_reserved_alloc(&qom_path, alloc_id, size);
+                donor_state.handle_reserved_alloc(&qom_path, &alloc_ids, request_size, size);
 
             // We may need to immediately return some of the memory we just got
             // if to_revoke is non-zero. This can happen if memory is revoked
@@ -209,23 +217,30 @@ impl DonorState {
             if to_revoke > 0 {
                 let _ = donor_state.return_eph_memory(&qom_path, to_revoke);
             }
-            if granted_size != 0 {
-                if rsvd_alloc.commit_allocation(
-                    Arc::downgrade(&donor_vm),
-                    qom_path.clone(),
-                    granted_size,
-                ) {
-                    return true;
+            let num_granted = (granted_size / crate::EPH_MEM_DONATION_GRANULARITY) as usize;
+            let mut abandoned_allocs = Vec::new();
+            for rsvd_alloc in &rsvd_allocs[backed_allocs..backed_allocs + num_granted] {
+                if !rsvd_alloc.commit_allocation(Arc::downgrade(&donor_vm), qom_path.clone()) {
+                    // The consumer abandoned this allocation while we were
+                    // negotiating with the donor. Hand the memory straight back
+                    // rather than orphaning it in the donor's bookkeeping.
+                    abandoned_allocs.push(rsvd_alloc.id);
                 }
-                // The consumer abandoned this allocation while we were
-                // negotiating with the donor. Hand the memory straight back
-                // rather than orphaning it in the donor's bookkeeping.
-                donor_state.return_and_bookkeep_eph_memory(&qom_path, alloc_id, granted_size);
-                return false;
             }
-            // Otherwise try the next donor in the list.
+            backed_allocs += num_granted;
+            if !abandoned_allocs.is_empty() {
+                donor_state.return_and_bookkeep_eph_memory(&qom_path, &abandoned_allocs);
+                // Abandoned allocations here indicate an issue with the
+                // consumer, so just return what we have instead of trying to
+                // allocate more.
+                break;
+            }
+
+            // Try the next donor if we have more allocations to back.
             last_path = donor_vm.qmp_socket_path.clone();
         }
+
+        backed_allocs
     }
 
     pub fn return_eph_memory(&self, qom_path: &str, size: u64) -> std::io::Result<()> {
@@ -238,22 +253,34 @@ impl DonorState {
             .inspect_err(|e| eprintln!("QMP error while returning eph memory: {}", e))
     }
 
-    pub fn return_and_bookkeep_eph_memory(&self, qom_path: &str, alloc_id: u64, size: u64) {
-        if self.return_eph_memory(qom_path, size).is_ok() {
-            self.bookkeep_returned_eph_memory(qom_path, alloc_id);
+    pub fn return_and_bookkeep_eph_memory(&self, qom_path: &str, alloc_ids: &[u64]) {
+        let return_size = alloc_ids.len() as u64 * crate::EPH_MEM_DONATION_GRANULARITY;
+        if self.return_eph_memory(qom_path, return_size).is_ok() {
+            for alloc_id in alloc_ids {
+                self.bookkeep_returned_eph_memory(qom_path, *alloc_id);
+            }
         }
     }
 
     pub fn bookkeep_returned_eph_memory(&self, donor_qom_path: &str, alloc_id: u64) {
         let mut donor_mut_state = self.mut_state.lock().unwrap();
-        let Some((region, i)) = donor_mut_state.find_alloc(donor_qom_path, alloc_id) else {
+        let Some(region) = donor_mut_state.find_region(donor_qom_path) else {
             eprintln!(
-                "Warning: Donor at {} is returning memory for an unknown allocation id {}",
-                donor_qom_path, alloc_id
+                "Warning: Donor at {} is returning memory for an unknown ephemeral region {}",
+                self.vm().qmp_socket_path.display(),
+                donor_qom_path
             );
             return;
         };
-        let size = region.allocations[i].size();
+        let Some(allocation) = region.allocations.get(&alloc_id) else {
+            eprintln!(
+                "Warning: Donor at {} is returning memory for an unknown ephemeral allocation id {}",
+                self.vm().qmp_socket_path.display(),
+                alloc_id
+            );
+            return;
+        };
+        let size = allocation.size();
         if region.donated < size {
             eprintln!(
                 "Warning: Donor at {} is returning more memory than it has donated. Donated {}, returning {}",
@@ -263,12 +290,25 @@ impl DonorState {
         } else {
             region.donated -= size;
         }
-        region.allocations.remove(i);
+        region.allocations.remove(&alloc_id);
     }
 
     /// Revoke `revoke_size` bytes of ephemeral memory owned by the donor VM
     /// device at `qom_path`.
     pub fn revoke_eph_memory(&self, qom_path: &str, revoke_size: u64) -> std::io::Result<()> {
+        // Keep revoke_size donation granularity aligned
+        let Some(revoke_size) =
+            revoke_size.checked_next_multiple_of(crate::EPH_MEM_DONATION_GRANULARITY)
+        else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Revoke size {} is too large to align to donation granularity {}",
+                    revoke_size,
+                    crate::EPH_MEM_DONATION_GRANULARITY
+                ),
+            ));
+        };
         // First find the allocations to revoke that will satisfy the revocation
         // request. If there are not enough committed allocations to satisfy the
         // request, that may mean there are some allocations that have received
@@ -292,7 +332,7 @@ impl DonorState {
             // There are many possibly fancy policies for selecting which
             // allocations to revoke. For now, we will just revoke the most
             // recent committed allocations first.
-            for alloc in region.allocations.iter().rev() {
+            for alloc in region.allocations.values().rev() {
                 if remaining_revoke_size == 0 {
                     break;
                 }
@@ -306,9 +346,7 @@ impl DonorState {
             allocs_to_revoke
         };
 
-        for alloc in allocs_to_revoke {
-            Vm::return_eph_memory_from_consumer(&alloc);
-        }
+        Vm::return_eph_memory_from_consumer(&allocs_to_revoke);
 
         // All the VM communication is done, so we can safely print a debug
         // message without slowing things down.
@@ -333,7 +371,7 @@ impl DonorState {
                 allocs.extend(
                     region
                         .allocations
-                        .iter()
+                        .values()
                         .filter(|a| a.is_committed())
                         .cloned(),
                 );
@@ -347,9 +385,7 @@ impl DonorState {
             allocs.len(),
             self.vm().qmp_socket_path.display()
         );
-        for a in allocs {
-            Vm::return_eph_memory_from_consumer(&a);
-        }
+        Vm::return_eph_memory_from_consumer(&allocs);
     }
 }
 
@@ -360,7 +396,7 @@ impl DonatableRegion {
             donated: 0,
             revoked_owed: 0,
             path,
-            allocations: Vec::new(),
+            allocations: BTreeMap::new(),
         }
     }
 }
