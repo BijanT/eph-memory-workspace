@@ -121,12 +121,12 @@ impl Client {
         // Drop the lock for the high latency IO
         drop(mut_state);
 
-        let resp = ConsumerCommand {
-            function: ConsumerFunction::EphMemResponse,
-            size: Some(size),
+        let resp = ConsumerCommand::new(
+            ConsumerFunction::EphMemResponse,
+            Some(size),
             // The client doesn't need to know the DCD offset.
-            offset: None,
-        };
+            None,
+        );
         // TODO: We should return the allocation to the orchestrator if we
         // cannot send the response to the client.
         self.connection.send(serde_json::to_value(&resp)?)

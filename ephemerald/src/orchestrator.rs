@@ -78,11 +78,7 @@ impl Orchestrator {
     }
 
     pub fn request_eph_mem(&self, amount: u64) -> std::io::Result<()> {
-        let cmd = ConsumerCommand {
-            function: ConsumerFunction::EphMemRequest,
-            size: Some(amount),
-            offset: None,
-        };
+        let cmd = ConsumerCommand::new(ConsumerFunction::EphMemRequest, Some(amount), None);
         self.connection.send(serde_json::to_value(&cmd)?)
     }
 }
