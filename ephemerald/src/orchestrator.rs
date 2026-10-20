@@ -43,7 +43,7 @@ impl Orchestrator {
                 Ok(())
             }
             ConsumerFunction::EphMemResponse => {
-                // Requires both the size and offset fields to be present
+                // Requires both the size, offset, and id fields to be present
                 let Some(size) = cmd.size else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -56,6 +56,13 @@ impl Orchestrator {
                         "EphMemResponse missing offset field",
                     ));
                 };
+                let Some(alloc_id) = cmd.id else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "EphMemResponse missing id field",
+                    ));
+                };
+                let more = cmd.more.unwrap_or(false);
                 // Responses of size 0 should not happen
                 if size == 0 {
                     return Err(std::io::Error::new(
@@ -65,7 +72,7 @@ impl Orchestrator {
                 }
 
                 let dax_device = DaxDevice::new(size)?;
-                Client::handle_eph_mem_response(&clients, size, offset, dax_device)
+                Client::handle_eph_mem_response(&clients, alloc_id, size, offset, more, dax_device)
             }
         }
     }
@@ -77,8 +84,9 @@ impl Orchestrator {
         std::process::exit(1);
     }
 
-    pub fn request_eph_mem(&self, amount: u64) -> std::io::Result<()> {
-        let cmd = ConsumerCommand::new(ConsumerFunction::EphMemRequest, Some(amount), None);
+    pub fn request_eph_mem(&self, alloc_id: u64, amount: u64) -> std::io::Result<()> {
+        let cmd = ConsumerCommand::new(ConsumerFunction::EphMemRequest, Some(amount), None)
+            .with_id(Some(alloc_id));
         self.connection.send(serde_json::to_value(&cmd)?)
     }
 }
