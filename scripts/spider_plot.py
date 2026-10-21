@@ -46,7 +46,7 @@ def main():
         ax.fill(angles, vals, color=color, alpha=0.12)
 
     ax.set_xticks(angles[:-1])
-    labels = ax.set_xticklabels(ATTRIBUTES, fontsize=13)
+    labels = ax.set_xticklabels(ATTRIBUTES, fontsize=18)
     ax.tick_params(axis="x", pad=18)
     # Labels on the left/right sides are centered on the axis by default, which
     # makes them overlap the plot; anchor them outward instead.
@@ -62,7 +62,7 @@ def main():
     ax.grid(color="gray", alpha=0.4)
 
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3,
-              frameon=False, fontsize=12)
+              frameon=False, fontsize=16)
 
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
 
