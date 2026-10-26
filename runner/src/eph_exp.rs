@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use clap::arg;
 
 use libscail::{
-    Login, ScailError, dir, escape_for_bash, get_user_home_dir,
+    Login, ScailError,
+    background::{BackgroundContext, BackgroundTask},
+    dir, escape_for_bash, get_user_home_dir,
     output::{Parametrize, Timestamp},
     workloads::{TasksetCtxBuilder, TasksetCtxInterleaving},
 };
@@ -36,6 +38,7 @@ struct Config {
     host_kvm_pf_trace: bool,
     bpf_stats: bool,
     host_perf_stat: bool,
+    numastat: bool,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -83,6 +86,10 @@ pub fn cli_options() -> clap::Command {
             arg!(--host_perf_stat "Collect perf stat data on host during the experiment")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            arg!(--numastat "Periodically collect numastat data in the guest during the experiment")
+                .action(clap::ArgAction::SetTrue),
+        )
         .subcommand(
             clap::Command::new("alloc_data")
                 .about("Allocate a specified amount of data in memory")
@@ -124,6 +131,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let host_kvm_pf_trace = sub_m.get_flag("host_kvm_pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
     let host_perf_stat = sub_m.get_flag("host_perf_stat");
+    let numastat = sub_m.get_flag("numastat");
 
     // Parse subcommand
     let workload = match sub_m.subcommand() {
@@ -155,6 +163,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         host_kvm_pf_trace,
         bpf_stats,
         host_perf_stat,
+        numastat,
         timestamp: Timestamp::now(),
     };
 
@@ -222,9 +231,12 @@ where
     let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
+    let numastat_file = dir!(&guest_results_dir, cfg.gen_file_name("numastat"));
     // We can reuse these files for both guest and host because their tmp
     // directories are different
     let perf_record_file = "/tmp/perf_record.out";
+
+    let mut guest_bgctx = BackgroundContext::new(&guest_shell);
 
     guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
     guest_shell.run(cmd!("mkdir -p {}", &guest_workloads_dir))?;
@@ -322,6 +334,18 @@ where
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
+    if cfg.numastat {
+        guest_bgctx.spawn(BackgroundTask {
+            name: "numastat",
+            period: 1, // Seconds
+            cmd: format!(
+                "sudo numastat -p $(pgrep -x {} | sort -n | head -n1) >> {} 2>/dev/null",
+                proc_name, numastat_file
+            ),
+            ensure_started: numastat_file,
+        })?;
+    }
+
     // Run the specified workload
     match &cfg.workload {
         Workload::AllocData(size_gb) => {
@@ -354,6 +378,8 @@ where
             guest_shell.run(cmd!("echo {:.3} | sudo tee {}", duration, spark_time_file))?;
         }
     }
+
+    guest_bgctx.notify_and_join_all()?;
 
     // If collecting FlameGraph data, process it now
     if let Some(num_splits) = cfg.flamegraph {
