@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use clap::arg;
 
 use libscail::{
-    Login, ScailError,
+    Login, ScailError, ScailErrorType,
     background::{BackgroundContext, BackgroundTask},
     dir, escape_for_bash, get_user_home_dir,
     output::{Parametrize, Timestamp},
@@ -21,6 +21,7 @@ enum Workload {
         scale_factor: u64,
         executor_mem_gb: u64,
     },
+    DuckDB,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parametrize)]
@@ -113,6 +114,10 @@ pub fn cli_options() -> clap::Command {
                         .required(true),
                 ),
         )
+        .subcommand(
+            clap::Command::new("duckdb")
+                .about("Run DuckDB with the TPC-H workload at scale factor 100")
+        )
 }
 
 pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
@@ -149,6 +154,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
                 executor_mem_gb,
             }
         }
+        Some(("duckdb", _)) => Workload::DuckDB,
         _ => unreachable!(),
     };
 
@@ -228,6 +234,7 @@ where
     let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
     let spark_file = dir!(&guest_results_dir, cfg.gen_file_name("spark"));
     let spark_time_file = dir!(&guest_results_dir, cfg.gen_file_name("spark_time"));
+    let duckdb_file = dir!(&guest_results_dir, cfg.gen_file_name("duckdb"));
     let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
@@ -248,7 +255,13 @@ where
         // TODO: Find the actual Spark process name
         // It's probably something like "java" or something
         Workload::Spark { .. } => "TODO",
+        Workload::DuckDB => "benchmark_runne",
     };
+    if proc_name.len() > 15 {
+        return Err(ScailError::new(ScailErrorType::InvalidValueError {
+            msg: format!("Process name {} is too long for pgrep", proc_name),
+        }));
+    }
 
     if let Workload::Spark { scale_factor, .. } = &cfg.workload {
         // Generate the TPC-DS database if needed
@@ -376,6 +389,25 @@ where
             ))?;
             let duration = start_time.elapsed().as_secs_f64();
             guest_shell.run(cmd!("echo {:.3} | sudo tee {}", duration, spark_time_file))?;
+        }
+        Workload::DuckDB => {
+            let duckdb_root_dir = dir!(&guest_workloads_dir, "duckdb");
+            let duckdb_bin = dir!(
+                &duckdb_root_dir,
+                "build",
+                "release",
+                "benchmark",
+                "benchmark_runner"
+            );
+            let queries = "benchmark/large/tpch-sf100/.*";
+            guest_shell.run(cmd!(
+                "{} {} --out={} --root-dir {} {}",
+                cmd_prefix,
+                duckdb_bin,
+                duckdb_file,
+                duckdb_root_dir,
+                queries
+            ))?;
         }
     }
 
