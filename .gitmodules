@@ -11,3 +11,6 @@
 [submodule "workloads/spark"]
 	path = workloads/spark
 	url = https://github.com/apache/spark.git
+[submodule "workloads/duckdb"]
+	path = workloads/duckdb
+	url = https://github.com/duckdb/duckdb.git
