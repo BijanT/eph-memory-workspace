@@ -39,7 +39,7 @@ struct Config {
     host_kvm_pf_trace: bool,
     bpf_stats: bool,
     host_perf_stat: bool,
-    numastat: bool,
+    numactl: bool,
 
     #[timestamp]
     timestamp: Timestamp,
@@ -88,7 +88,7 @@ pub fn cli_options() -> clap::Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
-            arg!(--numastat "Periodically collect numastat data in the guest during the experiment")
+            arg!(--numactl "Periodically collect numactl -H data in the guest during the experiment")
                 .action(clap::ArgAction::SetTrue),
         )
         .subcommand(
@@ -136,7 +136,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let host_kvm_pf_trace = sub_m.get_flag("host_kvm_pf_trace");
     let bpf_stats = sub_m.get_flag("bpf_stats");
     let host_perf_stat = sub_m.get_flag("host_perf_stat");
-    let numastat = sub_m.get_flag("numastat");
+    let numactl = sub_m.get_flag("numactl");
 
     // Parse subcommand
     let workload = match sub_m.subcommand() {
@@ -169,7 +169,7 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         host_kvm_pf_trace,
         bpf_stats,
         host_perf_stat,
-        numastat,
+        numactl,
         timestamp: Timestamp::now(),
     };
 
@@ -238,7 +238,7 @@ where
     let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
     let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
     let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
-    let numastat_file = dir!(&guest_results_dir, cfg.gen_file_name("numastat"));
+    let numactl_file = dir!(&guest_results_dir, cfg.gen_file_name("numactl"));
     // We can reuse these files for both guest and host because their tmp
     // directories are different
     let perf_record_file = "/tmp/perf_record.out";
@@ -347,15 +347,15 @@ where
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    if cfg.numastat {
+    if cfg.numactl {
         guest_bgctx.spawn(BackgroundTask {
-            name: "numastat",
+            name: "numactl",
             period: 1, // Seconds
             cmd: format!(
-                "sudo numastat -p $(pgrep -x {} | sort -n | head -n1) >> {} 2>/dev/null",
-                proc_name, numastat_file
+                "(echo ts $(date +%s.%N); numactl -H) >> {} 2>/dev/null",
+                numactl_file
             ),
-            ensure_started: numastat_file,
+            ensure_started: numactl_file,
         })?;
     }
 
