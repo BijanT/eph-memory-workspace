@@ -83,7 +83,7 @@ where
         // The host will be rebooted here, so the group changes will be applied
         // and the new kernel in use.
         let host_shell = crate::reboot_and_connect(login)?;
-        clone_research_workspace(&host_shell, cfg)?;
+        clone_research_workspace(&host_shell, true, cfg)?;
         build_qemu(&host_shell)?;
         if !cfg.skip_spark_build {
             build_spark_on_host(&host_shell)?;
@@ -93,7 +93,7 @@ where
     } else {
         // Still clone the host research workspace, which may include the VM
         // configuration changes we want to apply.
-        clone_research_workspace(&host_shell, cfg)?;
+        clone_research_workspace(&host_shell, true, cfg)?;
 
         // Reboot to clear any existing state
         crate::reboot_and_connect(login)?
@@ -311,7 +311,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
     Ok(())
 }
 
-fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), ScailError> {
+fn clone_research_workspace(ushell: &SshShell, host: bool, cfg: &Config) -> Result<(), ScailError> {
     const SUBMODULES: &[&str] = &[
         "bpftool",
         "libbpf",
@@ -343,10 +343,29 @@ fn clone_research_workspace(ushell: &SshShell, cfg: &Config) -> Result<(), Scail
     ushell.run(cmd!("sudo ldconfig"))?;
     ushell.run(cmd!("make").cwd(dir!(&wkspc_dir, "bpf")))?;
     ushell.run(cmd!("{}/.cargo/bin/cargo build", &user_home).cwd(dir!(&wkspc_dir)))?;
-    ushell.run(
-        cmd!("BUILD_BENCHMARK=1 BUILD_TPCH=1 LINK_CORE_EXTENSIONS=1 make -j$(nproc)")
-            .cwd(duckdb_dir),
-    )?;
+    // Build DuckDB and generate the TPC-H database for the guests by having it run one TPC-H query.
+    if !host {
+        ushell.run(
+            cmd!("BUILD_BENCHMARK=1 BUILD_TPCH=1 LINK_CORE_EXTENSIONS=1 make -j$(nproc)")
+                .cwd(&duckdb_dir),
+        )?;
+        let benchmark_runner = dir!(
+            &duckdb_dir,
+            "build",
+            "release",
+            "benchmark",
+            "benchmark_runner"
+        );
+        let query = "benchmark/large/tpch-sf100/q02.benchmark";
+        ushell.run(
+            cmd!(
+                "{} --disable-timeout --timed-runs 1 {}",
+                benchmark_runner,
+                query
+            )
+            .cwd(&duckdb_dir),
+        )?;
+    }
 
     Ok(())
 }
@@ -451,7 +470,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
         crate::start_and_connect_to_vm(ushell, vm_name, &host, crate::START_NAT_PORT, None)?;
     // Install dependencies and clone workspace inside the VM
     install_guest_dependencies(&vm_shell)?;
-    clone_research_workspace(&vm_shell, cfg)?;
+    clone_research_workspace(&vm_shell, false, cfg)?;
 
     vm_shell.run(cmd!("ls /lib/modules"))?;
 

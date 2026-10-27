@@ -391,9 +391,10 @@ where
             guest_shell.run(cmd!("echo {:.3} | sudo tee {}", duration, spark_time_file))?;
         }
         Workload::DuckDB => {
-            let duckdb_root_dir = dir!(&guest_workloads_dir, "duckdb");
             let duckdb_bin = dir!(
-                &duckdb_root_dir,
+                &guest_wkspc,
+                "workloads",
+                "duckdb",
                 "build",
                 "release",
                 "benchmark",
@@ -401,11 +402,10 @@ where
             );
             let queries = "benchmark/large/tpch-sf100/.*";
             guest_shell.run(cmd!(
-                "{} {} --out={} --root-dir {} {}",
+                "{} {} --out={} --disable-timeout {}",
                 cmd_prefix,
                 duckdb_bin,
                 duckdb_file,
-                duckdb_root_dir,
                 queries
             ))?;
         }
