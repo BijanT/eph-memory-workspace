@@ -180,7 +180,7 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    const VM_DOMAIN: &str = "balloon_vm";
+    const VM_DOMAIN: &str = "donor_vm";
 
     // Reboot the machine to start from a fresh slate
     let host_shell = crate::reboot_and_connect(login)?;
@@ -219,6 +219,9 @@ where
         "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
         crate::VM_SIZE_GB * 512
     ))?;
+
+    // Make sure the directory for the QMP sockets exists
+    crate::create_qmp_dir(&host_shell)?;
 
     let guest_shell = crate::start_and_connect_to_vm(
         &host_shell,
