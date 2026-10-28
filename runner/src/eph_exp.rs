@@ -228,27 +228,31 @@ where
         Some(vcpu_map),
     )?;
     let guest_home = get_user_home_dir(&guest_shell)?;
-    let guest_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
+    let guest_shared_results_dir = dir!(&guest_home, crate::RESULTS_DIR);
+    let guest_local_results_dir = dir!(&guest_home, "local_results");
     let guest_workloads_dir = dir!(&guest_home, "workloads");
     let guest_wkspc = dir!(&guest_home, crate::WKSPC_DIR);
-    let alloc_data_file = dir!(&guest_results_dir, cfg.gen_file_name("alloc_data"));
-    let spark_file = dir!(&guest_results_dir, cfg.gen_file_name("spark"));
-    let spark_time_file = dir!(&guest_results_dir, cfg.gen_file_name("spark_time"));
-    let duckdb_file = dir!(&guest_results_dir, cfg.gen_file_name("duckdb"));
-    let flamegraph_file_stem = dir!(&guest_results_dir, cfg.gen_file_name("flamegraph"));
-    let pf_trace_file = dir!(&guest_results_dir, cfg.gen_file_name("pf_trace"));
-    let bpf_stats_file = dir!(&guest_results_dir, cfg.gen_file_name("bpf_stats"));
-    let numactl_file = dir!(&guest_results_dir, cfg.gen_file_name("numactl"));
+    let alloc_data_file = dir!(&guest_local_results_dir, cfg.gen_file_name("alloc_data"));
+    let spark_file = dir!(&guest_local_results_dir, cfg.gen_file_name("spark"));
+    let spark_time_file = dir!(&guest_local_results_dir, cfg.gen_file_name("spark_time"));
+    let duckdb_file = dir!(&guest_local_results_dir, cfg.gen_file_name("duckdb"));
+    let flamegraph_file_stem = dir!(&guest_local_results_dir, cfg.gen_file_name("flamegraph"));
+    let pf_trace_file = dir!(&guest_local_results_dir, cfg.gen_file_name("pf_trace"));
+    let bpf_stats_file = dir!(&guest_local_results_dir, cfg.gen_file_name("bpf_stats"));
+    let numactl_file = dir!(&guest_local_results_dir, cfg.gen_file_name("numactl"));
     // We can reuse these files for both guest and host because their tmp
     // directories are different
     let perf_record_file = "/tmp/perf_record.out";
 
     let mut guest_bgctx = BackgroundContext::new(&guest_shell);
 
-    guest_shell.run(cmd!("mkdir -p {}", &guest_results_dir))?;
+    guest_shell.run(cmd!("mkdir -p {}", &guest_shared_results_dir))?;
+    guest_shell.run(cmd!("mkdir -p {}", &guest_local_results_dir))?;
     guest_shell.run(cmd!("mkdir -p {}", &guest_workloads_dir))?;
-    crate::mount_guest_results(&guest_shell, &guest_results_dir)?;
+    crate::mount_guest_results(&guest_shell, &guest_shared_results_dir)?;
     crate::mount_workloads_dir(&guest_shell, &guest_workloads_dir)?;
+    // Make sure any old results are cleared out before starting
+    guest_shell.run(cmd!("rm -rf {}/*", &guest_local_results_dir))?;
 
     let proc_name = match &cfg.workload {
         Workload::AllocData(_) => "alloc_data",
@@ -441,7 +445,21 @@ where
 
         // Stop the pf_trace program
         guest_shell.run(cmd!("touch /tmp/stop_pf_trace"))?;
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
+
+    // We suspect that if virtiofs tries to access pagecache files in donatable
+    // memory, which is not sharable, it will hang. Memory hogging applications
+    // should be done, so we don't have to worry about their memory, but they
+    // may have added a bunch of files to the pagecache. So, to be safe, drop
+    // the page cache before copying the results to the host.
+    // TODO: confirm and look into fixing this after I defend.
+    guest_shell.run(cmd!("sync; echo 3 | sudo tee /proc/sys/vm/drop_caches"))?;
+    guest_shell.run(cmd!(
+        "cp -r {}/. {}",
+        &guest_local_results_dir,
+        &guest_shared_results_dir
+    ))?;
 
     host_shell.run(cmd!(
         "virsh -c {} shutdown {}",
