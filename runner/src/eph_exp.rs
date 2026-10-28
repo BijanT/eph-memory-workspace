@@ -196,6 +196,11 @@ where
     let host_kvm_pf_trace_tmp_file = "/tmp/host_kvm_pf_trace.out";
     let host_kvm_pf_trace_file = dir!(&host_results_dir, cfg.gen_file_name("host_kvm_pf_trace"));
     let host_perf_stat_file = dir!(&host_results_dir, cfg.gen_file_name("host_perf_stat"));
+    let host_vm_log_file = dir!(
+        &host_results_dir,
+        cfg.gen_file_name(&format!("{}.log", VM_DOMAIN))
+    );
+    let vm_log_path = format!("/var/log/libvirt/qemu/{}.log", VM_DOMAIN);
 
     host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
     host_shell.run(cmd!(
@@ -222,6 +227,10 @@ where
 
     // Make sure the directory for the QMP sockets exists
     crate::create_qmp_dir(&host_shell)?;
+
+    // libvirt appends to the domain's log across boots. Truncate it so the
+    // log we save contains only this run.
+    host_shell.run(cmd!("sudo truncate -s 0 {}", &vm_log_path))?;
 
     let guest_shell = crate::start_and_connect_to_vm(
         &host_shell,
@@ -469,6 +478,13 @@ where
         crate::LIBVIRT_URI,
         VM_DOMAIN
     ))?;
+    // Wait for the VM to fully stop so the log is complete
+    host_shell.run(cmd!(
+        "while [ \"$(virsh -c {} domstate {})\" != \"shut off\" ]; do sleep 1; done",
+        crate::LIBVIRT_URI,
+        VM_DOMAIN
+    ))?;
+    host_shell.run(cmd!("sudo cp {} {}", &vm_log_path, &host_vm_log_file))?;
 
     // Give the host user permissions to the results directory
     host_shell.run(cmd!("sudo chown -R $USER {}", &host_results_dir))?;
