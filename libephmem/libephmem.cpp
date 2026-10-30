@@ -36,13 +36,13 @@ static const char *EPHEMERALD_JSON_SIZE_KEY = "size";
 
 enum EphemeraldFunction {
 	EPHEMERALD_FUNC_REQUEST = 0,
-	EPHEMERALD_FUNC_RESPONSE = 1,
+	EPHEMERALD_FUNC_GRANT = 1,
 	EPHEMERALD_FUN_MAX,
 };
 
 static const char *EphemeralFuncStrings[] = {
 	"eph-mem-request",
-	"eph-mem-response",
+	"eph-mem-grant",
 };
 
 struct libephmem_file {
@@ -350,7 +350,7 @@ size_t libephmem_reserve(size_t amount) {
 		fprintf(stderr, "Invalid response from ephemerald: %s is not an unsigned number\n",
 			EPHEMERALD_JSON_SIZE_KEY);
 		return 0;
-	} else if (func_it->get<std::string>() != EphemeralFuncStrings[EPHEMERALD_FUNC_RESPONSE]) {
+	} else if (func_it->get<std::string>() != EphemeralFuncStrings[EPHEMERALD_FUNC_GRANT]) {
 		fprintf(stderr, "Invalid response from ephemerald: unexpected function value %s\n",
 			func_it->get<std::string>().c_str());
 		return 0;

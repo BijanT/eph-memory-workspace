@@ -42,24 +42,24 @@ impl Orchestrator {
                 );
                 Ok(())
             }
-            ConsumerFunction::EphMemResponse => {
+            ConsumerFunction::EphMemGrant => {
                 // Requires both the size, offset, and id fields to be present
                 let Some(size) = cmd.size else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "EphMemResponse missing size field",
+                        "EphMemGrant missing size field",
                     ));
                 };
                 let Some(offset) = cmd.offset else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "EphMemResponse missing offset field",
+                        "EphMemGrant missing offset field",
                     ));
                 };
                 let Some(alloc_id) = cmd.id else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "EphMemResponse missing id field",
+                        "EphMemGrant missing id field",
                     ));
                 };
                 let more = cmd.more.unwrap_or(false);
@@ -67,12 +67,12 @@ impl Orchestrator {
                 if size == 0 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "EphMemResponse with size 0",
+                        "EphMemGrant with size 0",
                     ));
                 }
 
                 let dax_device = DaxDevice::new(size)?;
-                Client::handle_eph_mem_response(&clients, alloc_id, size, offset, more, dax_device)
+                Client::handle_eph_mem_grant(&clients, alloc_id, size, offset, more, dax_device)
             }
         }
     }

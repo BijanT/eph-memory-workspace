@@ -71,7 +71,7 @@ impl DaxDevice {
 
         // The create-device command should return devices in the order they
         // were created by the orchestrator, and the orchestrator should send
-        // EphMemResponse commands in the same order. If there's a size mismatch,
+        // EphMemGrant commands in the same order. If there's a size mismatch,
         // just bail out.
         if size != size_from_orch {
             // TODO return this device to the orchestrator.

@@ -615,7 +615,7 @@ impl ConsumerState {
         while let Some(alloc) = iter.next() {
             let more = iter.peek().is_some();
             let response = ConsumerCommand::new(
-                ConsumerFunction::EphMemResponse,
+                ConsumerFunction::EphMemGrant,
                 Some(alloc.size()),
                 Some(alloc.consumer_offset),
             )

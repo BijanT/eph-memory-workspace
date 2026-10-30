@@ -112,15 +112,15 @@ impl Client {
         }
     }
 
-    /// Handle an EphMemResponse from the orchestrator. May forward the response
-    /// to the client if this is the last response for the request.
+    /// Handle an EphMemGrant from the orchestrator. May forward the grant
+    /// to the client if this is the last grant for the request.
     ///
-    /// `id` - The allocation ID of the request that this response is for.
-    /// `more` - Whether the orchestrator will send more responses for this request.
+    /// `id` - The allocation ID of the request that this grant is for.
+    /// `more` - Whether the orchestrator will send more grants for this request.
     /// `allocation` - The allocation to send to the client. If None, the client
-    /// will be sent a response with size 0, indicating that the request was
+    /// will be sent a grant with size 0, indicating that the request was
     /// denied.
-    fn send_eph_mem_response(
+    fn send_eph_mem_grant(
         &self,
         id: u64,
         more: bool,
@@ -132,7 +132,7 @@ impl Client {
         };
         if pending_request.id != id {
             return Err(std::io::Error::other(format!(
-                "Pending request ID {} does not match response ID {}",
+                "Pending request ID {} does not match grant ID {}",
                 pending_request.id, id
             )));
         }
@@ -144,7 +144,7 @@ impl Client {
             let remaining = pending_request.requested - pending_request.received;
             if allocation.size > remaining {
                 return Err(std::io::Error::other(format!(
-                    "Response of {} bytes exceeds the {} bytes still outstanding for request {} ({} requested)",
+                    "Grant of {} bytes exceeds the {} bytes still outstanding for request {} ({} requested)",
                     allocation.size, remaining, id, pending_request.requested
                 )));
             }
@@ -153,8 +153,8 @@ impl Client {
             pending_request.allocations.push(allocation);
         }
 
-        // Don't send a response to the client until we have received all the
-        // responses from the orchestrator.
+        // Don't send a grant to the client until we have received all the
+        // grants from the orchestrator.
         if more {
             return Ok(());
         }
@@ -168,25 +168,25 @@ impl Client {
         drop(mut_state);
 
         let resp = ConsumerCommand::new(
-            ConsumerFunction::EphMemResponse,
+            ConsumerFunction::EphMemGrant,
             Some(pending.received),
             // The client doesn't need to know the DCD offset.
             None,
         );
         // TODO: We should return the allocation to the orchestrator if we
-        // cannot send the response to the client.
+        // cannot send the grant to the client.
         self.connection.send(serde_json::to_value(&resp)?)
     }
 
-    /// Handle an EphMemResponse from the orchestrator.
+    /// Handle an EphMemGrant from the orchestrator.
     ///
     /// `clients` - The list of clients
-    /// `alloc_id` - The allocation ID of the request that this response is for
+    /// `alloc_id` - The allocation ID of the request that this grant is for
     /// `size` - The size of the ephemeral memory allocated to this VM
     /// `offset` - The offset of the allocation in the VM's DCD.
-    /// `more` - Whether the orchestrator will send more responses for this request
+    /// `more` - Whether the orchestrator will send more grants for this request
     /// `dax_device` - The DAX device for the allocation.
-    pub fn handle_eph_mem_response(
+    pub fn handle_eph_mem_grant(
         clients: &ClientList,
         alloc_id: u64,
         size: u64,
@@ -209,7 +209,7 @@ impl Client {
         drop(clients_locked);
 
         if let Some(client) = found_client {
-            return client.send_eph_mem_response(
+            return client.send_eph_mem_grant(
                 alloc_id,
                 more,
                 Some(EphAllocation {
@@ -222,7 +222,7 @@ impl Client {
             // TODO: We need to add a path to return memory to the orchestrator
             // if no client is found.
             eprintln!(
-                "No client found with a pending request for id {}. Dropping response with size {} and offset {}",
+                "No client found with a pending request for id {}. Dropping grant with size {} and offset {}",
                 alloc_id, size, offset
             );
         }
@@ -330,9 +330,9 @@ impl Client {
                 let id = REQUEST_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Self::handle_eph_mem_request(client, &orchestrator, id, amount)
             }
-            ConsumerFunction::EphMemResponse => Err(std::io::Error::new(
+            ConsumerFunction::EphMemGrant => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Received EphMemResponse command from client {client_pid}"),
+                format!("Received EphMemGrant command from client {client_pid}"),
             )),
         }
     }
@@ -387,17 +387,17 @@ impl Client {
         // Forward the ephemeral memory request to the orchestrator
         let result = orchestrator.request_eph_mem(alloc_id, amount);
 
-        // If the request failed, send the response to the client, which will
-        // also unset pending_request.
+        // If the request failed, send an empty EphMemGrant to the client, which
+        // will also unset pending_request.
         // There is potentially a race condition where another request sets
         // pending request before we unset it. We are protected from this
         // for two reasons:
         // 1. pending_request will not be set again when already set
         // 2. Consumer requests are serialized by msg_handler
         if result.is_err()
-            && let Err(e) = client.send_eph_mem_response(alloc_id, false, None)
+            && let Err(e) = client.send_eph_mem_grant(alloc_id, false, None)
         {
-            eprintln!("Failed to send EphMemResponse to client: {}", e);
+            eprintln!("Failed to send EphMemGrant to client: {}", e);
         }
         result
     }

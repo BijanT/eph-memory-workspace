@@ -8,7 +8,7 @@ pub const VSOCK_PORT: u32 = 1848;
 #[serde(rename_all = "kebab-case")]
 pub enum ConsumerFunction {
     EphMemRequest,
-    EphMemResponse,
+    EphMemGrant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
