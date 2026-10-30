@@ -1,3 +1,4 @@
+#include <atomic>
 #include <csetjmp>
 #include <csignal>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <thread>
 #include <poll.h>
 #include <unistd.h>
 
@@ -25,10 +27,12 @@ static const char *EPHMFS_DIR_ENV_VAR = "EPHMFS_DIR";
 static const char *EPHEMERALD_SOCK_ENV_VAR = "EPHEMERALD_PATH";
 static std::string libephmfs_ephmfs_dir = "/mnt/ephmfs";
 static std::string libephmfs_ephemerald_sock = "/run/ephemerald.sock";
+static std::atomic<libephmem_callback_fn> libephmem_callback{nullptr};
 static int ephemerald_sock_fd = -1;
 static int ephmem_pkey = -1;
 static std::mutex ephmem_mutex;
 static bool libephmem_setup_succeeded = false;
+static size_t libephmem_requested_size = 0;
 
 // Definitions for the wire protocol between libephmem and ephemerald
 static const char *EPHEMERALD_JSON_FUNC_KEY = "function";
@@ -118,49 +122,6 @@ static int connect_to_ephemerald(char *path) {
 	return sock_fd;
 }
 
-static void libephmem_init() {
-	char *ephmfs_dir;
-	char *ephemerald_sock;
-	struct sigaction sa = {};
-
-	ephmfs_dir = std::getenv(EPHMFS_DIR_ENV_VAR);
-	if (ephmfs_dir != nullptr) {
-		libephmfs_ephmfs_dir = std::string(ephmfs_dir);
-	}
-
-	ephemerald_sock = std::getenv(EPHEMERALD_SOCK_ENV_VAR);
-	if (ephemerald_sock != nullptr) {
-		libephmfs_ephemerald_sock = std::string(ephemerald_sock);
-	}
-
-	ephemerald_sock_fd = connect_to_ephemerald(libephmfs_ephemerald_sock.data());
-	if (ephemerald_sock_fd == -1) {
-		return;
-	}
-
-	sa.sa_sigaction = libephmem_sig_handler;
-	sa.sa_flags = SA_SIGINFO;
-	sigemptyset(&sa.sa_mask);
-	if (sigaction(SIGBUS, &sa, nullptr) == -1) {
-		perror("Failed to install signal handler");
-	}
-
-	/*
-	 * Failure means either the CPU does not support protection keys or for
-	 * some other reason, this process has run out. I don't think that's
-	 * reason enough to fail, but we should at least print something to let
-	 * the user know.
-	 */
-	ephmem_pkey = pkey_alloc(0, PKEY_DISABLE_ACCESS);
-	if (ephmem_pkey == -1) {
-		perror("Failed to allocate protection key for ephemeral memory");
-		fprintf(stderr, "Proceeding without protection keys. Ephemeral memory"
-			" will be accessible outside of attempt contexts.\n");
-	}
-
-	libephmem_setup_succeeded = true;
-}
-
 size_t libephmem_size(struct libephmem_handle *handle) {
 	return handle->size;
 }
@@ -168,6 +129,8 @@ size_t libephmem_size(struct libephmem_handle *handle) {
 static int libephmem_send(int sock, std::string &req) {
 	ssize_t bytes_to_send = req.size();
 	ssize_t total_bytes_sent = 0;
+	int ret;
+
 	while (bytes_to_send) {
 		ssize_t bytes_sent = send(sock, &req.c_str()[total_bytes_sent],
 					  bytes_to_send, MSG_NOSIGNAL);
@@ -175,8 +138,9 @@ static int libephmem_send(int sock, std::string &req) {
 			if (errno == EINTR) {
 				continue; // Interrupted by signal, retry
 			}
+			ret = -errno;
 			perror("Failed to send request to ephemerald");
-			return -1;
+			return ret;
 		}
 		bytes_to_send -= bytes_sent;
 		total_bytes_sent += bytes_sent;
@@ -184,18 +148,14 @@ static int libephmem_send(int sock, std::string &req) {
 	return 0;
 }
 
-static int libephmem_recv(int sock, int timeout_ms, char *buf, size_t buf_size) {
+static int libephmem_recv(int sock, int timeout_ms, std::string &buf) {
 	struct pollfd pfd;
-	size_t total_bytes_received = 0;
+	char chunk[MAX_JSON_BUF];
 
 	pfd.fd = sock;
 	pfd.events = POLLIN;
 
-
-	while (total_bytes_received < buf_size - 1) {
-		char *pos = buf + total_bytes_received;
-		size_t remaining = buf_size - 1 - total_bytes_received;
-
+	while (buf.size() < MAX_JSON_BUF) {
 		int poll_result = poll(&pfd, 1, timeout_ms);
 		if (poll_result == -1) {
 			if (errno == EINTR) {
@@ -213,7 +173,7 @@ static int libephmem_recv(int sock, int timeout_ms, char *buf, size_t buf_size) 
 			return -1;
 		}
 
-		ssize_t n = recv(sock, pos, remaining, MSG_NOSIGNAL);
+		ssize_t n = recv(sock, chunk, sizeof(chunk), MSG_NOSIGNAL);
 		if (n == -1) {
 			// This shouldn't happen since we polled for
 			// readability, but handle it just in case.
@@ -227,72 +187,190 @@ static int libephmem_recv(int sock, int timeout_ms, char *buf, size_t buf_size) 
 			return -1;
 		}
 		size_t bytes_received = static_cast<size_t>(n);
+		buf.append(chunk, bytes_received);
 
-		// Search for newline character to determine end of message
-		for (size_t i = 0; i < bytes_received; ++i) {
-			if (pos[i] == '\n') {
-				total_bytes_received += i;
-				buf[total_bytes_received] = '\0'; // Null-terminate the string
+		for (size_t i = 0; i < bytes_received; i++) {
+			if (chunk[i] == '\n') {
 				return 0;
 			}
 		}
-		// Newline not found. Keep on reading
-		total_bytes_received += bytes_received;
 	}
 
 	fprintf(stderr, "Buffer overflow while receiving response from ephemerald\n");
 	return -1;
 }
 
-static int libephmem_drain(int sock) {
-	char buf[MAX_JSON_BUF];
-	while (true) {
-		ssize_t n = recv(sock, buf, sizeof(buf), MSG_DONTWAIT | MSG_NOSIGNAL);
-		if (n > 0) // Keep draining
-			continue;
-		else if (n == 0) { // Connection closed
-			fprintf(stderr, "libephmem_drain: Connection closed by ephemerald\n");
-			return -1;
-		} else if (errno == EINTR) { // Interrupted by signal, retry
-			continue;
+static void libephmem_handle_message(std::string msg) {
+	// Process the response from ephemerald.
+	json response = json::parse(msg, nullptr, false);
+	if (response.is_discarded()) {
+		fprintf(stderr, "Failed to parse response from ephemerald\n");
+		return;
+	}
+
+	auto func_it = response.find(EPHEMERALD_JSON_FUNC_KEY);
+	auto size_it = response.find(EPHEMERALD_JSON_SIZE_KEY);
+	if (func_it == response.end() || size_it == response.end()) {
+		fprintf(stderr, "Invalid message from ephemerald: missing required keys\n");
+	} else if (!func_it->is_string()) {
+		fprintf(stderr, "Invalid message from ephemerald: %s is not a string\n",
+			EPHEMERALD_JSON_FUNC_KEY);
+	} else if (!size_it->is_number_unsigned()) {
+		fprintf(stderr, "Invalid message from ephemerald: %s is not an unsigned number\n",
+			EPHEMERALD_JSON_SIZE_KEY);
+	} else if (func_it->get<std::string>() != EphemeralFuncStrings[EPHEMERALD_FUNC_GRANT]) {
+		fprintf(stderr, "Invalid message from ephemerald: unexpected function value %s\n",
+			func_it->get<std::string>().c_str());
+	} else {
+		// Valid grant message from ephemerald. Pass it on via the callback
+		auto callback = libephmem_callback.load(std::memory_order_acquire);
+		if (callback) {
+			callback(size_it->get<size_t>());
+		} else {
+			fprintf(stderr, "libephmem_read_thread: No callback registered for grant message\n");
 		}
-		else if (errno == EAGAIN || errno == EWOULDBLOCK) { // No more data to read
+	}
+}
+
+static void libephmem_read_thread() {
+	std::string buffer;
+	int local_sock_fd;
+
+	ephmem_mutex.lock();
+	local_sock_fd = ephemerald_sock_fd;
+	ephmem_mutex.unlock();
+
+	while (true) {
+		// Wait for a message from ephemerald
+		int result = libephmem_recv(local_sock_fd, -1, buffer);
+		if (result == -1) {
+			fprintf(stderr, "libephmem_read_thread: Failed to receive message from ephemerald\n");
 			break;
 		}
 
-		perror("Failed to drain socket");
-		return -1;
+		// recv may return multiple messages in the buffer, so handle each of them
+		size_t pos;
+		while ((pos = buffer.find('\n')) != std::string::npos) {
+			std::string msg = buffer.substr(0, pos);
+			buffer.erase(0, pos + 1);
+			libephmem_handle_message(msg);
+		}
+		// There may be partial messages remaining in the buffer. We
+		// will handle them in the next iteration of the loop.
 	}
-	return 0;
+
+	// We are no longer reading from ephemerald, so invalidate the fd
+	std::lock_guard<std::mutex> lock(ephmem_mutex);
+	close(local_sock_fd);
+	ephemerald_sock_fd = -1;
+	fprintf(stderr, "libephmem_read_thread: Exiting\n");
 }
 
-size_t libephmem_reserve(size_t amount) {
-	char buffer[MAX_JSON_BUF];
+static void libephmem_init() {
+	char *ephmfs_dir;
+	char *ephemerald_sock;
+	struct sigaction sa = {};
+
+	ephmfs_dir = std::getenv(EPHMFS_DIR_ENV_VAR);
+	if (ephmfs_dir != nullptr) {
+		libephmfs_ephmfs_dir = std::string(ephmfs_dir);
+	}
+
+	ephemerald_sock = std::getenv(EPHEMERALD_SOCK_ENV_VAR);
+	if (ephemerald_sock != nullptr) {
+		libephmfs_ephemerald_sock = std::string(ephemerald_sock);
+	}
+
+	sa.sa_sigaction = libephmem_sig_handler;
+	sa.sa_flags = SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGBUS, &sa, nullptr) == -1) {
+		perror("Failed to install signal handler");
+		return;
+	}
+
+	ephemerald_sock_fd = connect_to_ephemerald(libephmfs_ephemerald_sock.data());
+	if (ephemerald_sock_fd == -1) {
+		return;
+	}
+
+	/*
+	 * Failure means either the CPU does not support protection keys or for
+	 * some other reason, this process has run out. I don't think that's
+	 * reason enough to fail, but we should at least print something to let
+	 * the user know.
+	 */
+	ephmem_pkey = pkey_alloc(0, PKEY_DISABLE_ACCESS);
+	if (ephmem_pkey == -1) {
+		perror("Failed to allocate protection key for ephemeral memory");
+		fprintf(stderr, "Proceeding without protection keys. Ephemeral memory"
+			" will be accessible outside of attempt contexts.\n");
+	}
+
+	try {
+		std::thread read_thread(libephmem_read_thread);
+		read_thread.detach();
+	} catch (const std::system_error &e) {
+		fprintf(stderr, "libephmem_init: Exception occurred: %s\n", e.what());
+		close(ephemerald_sock_fd);
+		ephemerald_sock_fd = -1;
+		if (ephmem_pkey != -1) {
+			pkey_free(ephmem_pkey);
+			ephmem_pkey = -1;
+		}
+		return;
+	}
+
+	libephmem_setup_succeeded = true;
+}
+
+void libephmem_register_callback(libephmem_callback_fn callback) {
+	libephmem_callback.store(callback, std::memory_order_release);
+}
+
+static int libephmem_change_request(size_t amount, bool increase) {
+	int ret;
+	const char *func_name;
 	std::call_once(libephmem_initialized, libephmem_init);
 
+	if (increase)
+		func_name = "libephmem_request";
+	else
+		func_name = "libephmem_release";
+
+	if (libephmem_callback.load(std::memory_order_acquire) == nullptr) {
+		fprintf(stderr, "%s: No callback registered\n", func_name);
+		return -EINVAL;
+	}
 	if (!libephmem_setup_succeeded) {
-		fprintf(stderr, "libephmem_reserve: Initialization failed\n");
-		return 0;
-	}
-
-	if (ephemerald_sock_fd == -1) {
-		fprintf(stderr, "libephmem_reserve: Not connected to ephemerald\n");
-		return 0;
-	}
-
-	// Can early out if the amount is zero
-	if (amount == 0) {
-		return 0;
+		fprintf(stderr, "%s: Initialization failed\n", func_name);
+		return -EINVAL;
 	}
 
 	// Round up the amount to the nearest multiple of LIBEPHMEM_RESERVATION_GRANULARITY
 	// But first, check for overflow
 	size_t granularity_mask = LIBEPHMEM_RESERVATION_GRANULARITY - 1;
 	if (amount > SIZE_MAX - granularity_mask) {
-		fprintf(stderr, "libephmem_reserve: Amount too large, would overflow\n");
-		return 0;
+		fprintf(stderr, "%s: Amount too large, would overflow\n", func_name);
+		return -EINVAL;
 	}
 	amount = (amount + granularity_mask) & ~granularity_mask;
+
+	std::lock_guard<std::mutex> lock(ephmem_mutex);
+	if (ephemerald_sock_fd == -1) {
+		fprintf(stderr, "%s: Not connected to ephemerald\n", func_name);
+		return -ENOTCONN;
+	}
+
+	if (increase && amount < libephmem_requested_size) {
+		fprintf(stderr, "%s: Candidate request amount %zu is less than already requested amount %zu\n",
+			func_name, amount, libephmem_requested_size);
+		return -EINVAL;
+	} else if (!increase && amount > libephmem_requested_size) {
+		fprintf(stderr, "%s: Candidate request amount %zu is greater than already requested amount %zu\n",
+			func_name, amount, libephmem_requested_size);
+		return -EINVAL;
+	}
 
 	// Ask ephemerald to reserve ephemeral memory for this process.
 	json request = {
@@ -304,69 +382,26 @@ size_t libephmem_reserve(size_t amount) {
 	// Messages are newline delimited
 	request_str.push_back('\n');
 
-	// Take the mutex so message streams don't get mixed up.
-	// Ephemerald only accepts one reserve request from a client at a time
-	// anyway.
-	std::lock_guard<std::mutex> lock(ephmem_mutex);
-
-	// Drain any pending messages from ephemerald before sending a new
-	// request. This is fragile because a late message can still come in
-	// after we drain. A more robust solution would be to have a unique
-	// ID per request, which is returned in the reponse.
-	// We should probably eventually do that, but for now, this should work
-	// with the current implementation of ephemerald.
-	if (libephmem_drain(ephemerald_sock_fd) == -1) {
-		return 0;
+	ret = libephmem_send(ephemerald_sock_fd, request_str);
+	if (ret < 0) {
+		// Consider the connection dead
+		shutdown(ephemerald_sock_fd, SHUT_RDWR);
+		ephemerald_sock_fd = -1;
+		return ret;
 	}
 
-	if (libephmem_send(ephemerald_sock_fd, request_str) == -1) {
-		perror("Failed to send request to ephemerald");
-		return 0;
-	}
+	// Only update the granted size after successfully sending the request
+	libephmem_requested_size = amount;
 
-	// Wait for a response from ephemerald
-	int result = libephmem_recv(ephemerald_sock_fd, 1000, buffer, MAX_JSON_BUF);
-	if (result == -1) {
-		return 0;
-	}
+	return 0;
+}
 
-	// Process the response from ephemerald.
-	json response = json::parse(buffer, nullptr, false);
-	if (response.is_discarded()) {
-		fprintf(stderr, "Failed to parse response from ephemerald\n");
-		return 0;
-	}
+int libephmem_request(size_t amount) {
+	return libephmem_change_request(amount, true);
+}
 
-	auto func_it = response.find(EPHEMERALD_JSON_FUNC_KEY);
-	auto size_it = response.find(EPHEMERALD_JSON_SIZE_KEY);
-	if (func_it == response.end() || size_it == response.end()) {
-		fprintf(stderr, "Invalid response from ephemerald: missing required keys\n");
-		return 0;
-	} else if (!func_it->is_string()) {
-		fprintf(stderr, "Invalid response from ephemerald: %s is not a string\n",
-			EPHEMERALD_JSON_FUNC_KEY);
-		return 0;
-	} else if (!size_it->is_number_unsigned()) {
-		fprintf(stderr, "Invalid response from ephemerald: %s is not an unsigned number\n",
-			EPHEMERALD_JSON_SIZE_KEY);
-		return 0;
-	} else if (func_it->get<std::string>() != EphemeralFuncStrings[EPHEMERALD_FUNC_GRANT]) {
-		fprintf(stderr, "Invalid response from ephemerald: unexpected function value %s\n",
-			func_it->get<std::string>().c_str());
-		return 0;
-	}
-
-	// We don't currently have a mechanism to reject requests, so just log
-	// if the response size is larger than requested.
-	size_t reserved_size = size_it->get<size_t>();
-	if (reserved_size > amount) {
-		fprintf(stderr, "Warning: ephemerald reserved more memory than requested: %zu >%zu\n",
-			reserved_size, amount);
-		// Maintain the contract that we return up to the requested amount
-		reserved_size = amount;
-	}
-
-	return reserved_size;
+int libephmem_release(size_t amount) {
+	return libephmem_change_request(amount, false);
 }
 
 static std::unique_ptr<struct libephmem_file> libephmem_create_file(size_t size) {
