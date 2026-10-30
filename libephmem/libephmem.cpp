@@ -37,7 +37,7 @@ static const char *EPHEMERALD_JSON_SIZE_KEY = "size";
 enum EphemeraldFunction {
 	EPHEMERALD_FUNC_REQUEST = 0,
 	EPHEMERALD_FUNC_GRANT = 1,
-	EPHEMERALD_FUN_MAX,
+	EPHEMERALD_FUNC_MAX,
 };
 
 static const char *EphemeralFuncStrings[] = {
