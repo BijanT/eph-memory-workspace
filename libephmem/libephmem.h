@@ -28,15 +28,35 @@ struct libephmem_handle;
  */
 size_t libephmem_size(struct libephmem_handle *handle);
 
+typedef void (*libephmem_callback_fn)(size_t size);
 /*
- * Reserves up to the specified amount of ephemeral memory for the process.
- * This blocks for up to 1 second waiting for a response from ephemerald.
- * @param amount: The amount of ephemeral memory to reserve in bytes, rounded
- * up to the nearest multiple of LIBEPHMEM_RESERVATION_GRANULARITY.
- * @return The amount of ephemeral memory actually reserved. May be less than
- * requested or zero.
+ * Registers a callback function to be called when ephemeral memory is granted.
+ * The callback is called in the internal thread that processes granted
+ * ephemeral memory from ephemerald and should return relatively quickly.
+ * @param callback: A function pointer to the user-provided callback function.
  */
-size_t libephmem_reserve(size_t amount);
+void libephmem_register_callback(libephmem_callback_fn callback);
+
+/*
+ * Increases the amount of ephemeral memory requested by this process to
+ * the specified amount. If that amount is less than the current request size,
+ * an error will be returned and no message will be sent to the orchestrator.
+ * @param amount: The amount of ephemeral memory to request in bytes, rounded
+ * up to the nearest multiple of LIBEPHMEM_RESERVATION_GRANULARITY.
+ * @return 0 on success, -EINVAL on invalid arguments, -errno on other failures.
+ */
+int libephmem_request(size_t amount);
+
+/*
+ * Lowers the total amount of ephemeral memory requested by this process to
+ * the specified amount. If that amount is greater than the current request
+ * size, an error will be returned and no message will be sent to the
+ * orchestrator.
+ * @param amount: The amount of ephemeral memory to request in bytes, rounded
+ * up to the nearest multiple of LIBEPHMEM_RESERVATION_GRANULARITY.
+ * @return 0 on success, -EINVAL on invalid arguments, -errno on other failures.
+ */
+int libephmem_release(size_t amount);
 
 /*
  * Allocates ephemeral memory of the specified size.
