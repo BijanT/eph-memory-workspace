@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use crate::client::{Client, ClientList};
 use crate::connection::{Connection, ConnectionType};
 use crate::dcd::DaxDevice;
@@ -7,6 +9,17 @@ use vsock::VsockStream;
 #[allow(dead_code)]
 pub struct Orchestrator {
     connection: Connection<VsockStream>,
+    // Mutex to synchronize sending ephemeral memory requests to the
+    // orchestrator. This is used to guard against a race where:
+    // 1) Client A updates its request and calculates a new total requested
+    // amount for this VM, but does not send it to the orchestrator yet.
+    // 2) Client B updates its request and calculates a newer total
+    // requested amount for the client.
+    // 3) Client B sends its view of the total requested amount to the
+    // orchestrator.
+    // 4) Client A sends its view of the requested amount to the
+    // orchestrator, which does not include Client B's updates.
+    request_lock: Mutex<()>,
 }
 
 impl Orchestrator {
@@ -25,7 +38,10 @@ impl Orchestrator {
             msg_handler,
             Self::close_handler,
         )?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            request_lock: Mutex::new(()),
+        })
     }
 
     fn msg_handler(
@@ -36,45 +52,72 @@ impl Orchestrator {
         let cmd = serde_json::from_value::<ConsumerCommand>(json)?;
 
         match cmd.function {
-            ConsumerFunction::EphMemRequest => {
-                eprintln!(
-                    "Received EphMemRequest from consumer, but orchestrator doesn't handle this command."
-                );
-                Ok(())
-            }
             ConsumerFunction::EphMemGrant => {
-                // Requires both the size, offset, and id fields to be present
+                let more = cmd.more.unwrap_or(false);
+                let result = Self::assign_grant(&clients, &cmd);
+
+                if !more {
+                    // The orchestrator is done sending grants for this request even
+                    // if the last one was malformed or failed, so deliver whatever
+                    // was assigned before it.
+                    Client::flush_pending_grants(&clients);
+                }
+                result
+            }
+            ConsumerFunction::EphMemRelease => {
+                // Requires both the size and offset fields to be present
                 let Some(size) = cmd.size else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "EphMemGrant missing size field",
+                        "EphMemRelease missing size field",
                     ));
                 };
                 let Some(offset) = cmd.offset else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        "EphMemGrant missing offset field",
+                        "EphMemRelease missing offset field",
                     ));
                 };
-                let Some(alloc_id) = cmd.id else {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "EphMemGrant missing id field",
-                    ));
-                };
-                let more = cmd.more.unwrap_or(false);
-                // Responses of size 0 should not happen
-                if size == 0 {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "EphMemGrant with size 0",
-                    ));
-                }
-
-                let dax_device = DaxDevice::new(size)?;
-                Client::handle_eph_mem_grant(&clients, alloc_id, size, offset, more, dax_device)
+                Client::handle_eph_mem_release(&clients, size, offset)
+            }
+            other => {
+                eprintln!(
+                    "Received {} from orchestrator, but ephemerald doesn't handle this command.",
+                    serde_json::to_string(&other).unwrap_or_else(|_| "unknown".to_string())
+                );
+                Ok(())
             }
         }
+    }
+
+    /// Validate an EphMemGrant from the orchestrator and assign it to a client.
+    ///
+    /// `clients` - The list of clients
+    /// `cmd` - The EphMemGrant command
+    fn assign_grant(clients: &ClientList, cmd: &ConsumerCommand) -> std::io::Result<()> {
+        // Requires both the size and offset fields to be present
+        let Some(size) = cmd.size else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "EphMemGrant missing size field",
+            ));
+        };
+        let Some(offset) = cmd.offset else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "EphMemGrant missing offset field",
+            ));
+        };
+        // Grants of size 0 should not happen
+        if size == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "EphMemGrant with size 0",
+            ));
+        }
+
+        let dax_device = DaxDevice::new(size)?;
+        Client::handle_eph_mem_grant(clients, size, offset, dax_device)
     }
 
     fn close_handler(_ctype: ConnectionType, _id: u64) {
@@ -84,9 +127,18 @@ impl Orchestrator {
         std::process::exit(1);
     }
 
-    pub fn request_eph_mem(&self, alloc_id: u64, amount: u64) -> std::io::Result<()> {
-        let cmd = ConsumerCommand::new(ConsumerFunction::EphMemRequest, Some(amount), None)
-            .with_id(Some(alloc_id));
+    pub fn request_eph_mem(&self, amount: u64) -> std::io::Result<()> {
+        let cmd = ConsumerCommand::new(ConsumerFunction::EphMemRequest, Some(amount), None);
         self.connection.send(serde_json::to_value(&cmd)?)
+    }
+
+    pub fn release_eph_mem(&self, size: u64, offset: u64) -> std::io::Result<()> {
+        let cmd = ConsumerCommand::new(ConsumerFunction::EphMemRelease, Some(size), Some(offset));
+        self.connection.send(serde_json::to_value(&cmd)?)
+    }
+
+    pub fn lock_request(&self) -> std::sync::MutexGuard<'_, ()> {
+        // The lock doesn't protect data, so a poisoned lock is fine.
+        self.request_lock.lock().unwrap_or_else(|e| e.into_inner())
     }
 }

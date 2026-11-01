@@ -1,10 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, Permissions};
+use std::ops::Bound::{Excluded, Included};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -18,6 +18,7 @@ struct EphAllocation {
     offset: u64,
     size: u64,
     dax_device: DaxDevice,
+    pending_release: bool,
 }
 
 impl std::borrow::Borrow<u64> for EphAllocation {
@@ -46,13 +47,6 @@ impl PartialEq for EphAllocation {
 
 impl Eq for EphAllocation {}
 
-struct PendingRequest {
-    id: u64,
-    requested: u64,
-    received: u64,
-    allocations: Vec<EphAllocation>,
-}
-
 pub struct Client {
     // The connection to the client
     connection: Connection<UnixStream>,
@@ -62,14 +56,20 @@ pub struct Client {
 
 #[allow(dead_code)]
 pub struct ClientMutState {
-    // A set of all allocations for this client
+    // The set of all allocations announced to the client.
     allocations: BTreeSet<EphAllocation>,
-    // Metadata for a pending request from the client.
-    pending_request: Option<PendingRequest>,
+    // The set of allocations assigned to the client, but not sent to the client
+    pending_allocations: BTreeSet<EphAllocation>,
+    // The total amount of ephemeral memory requested by the client
+    requested: u64,
+    // The total amount of ephemeral memory that has been granted to the client
+    granted: u64,
+    // The amount of ephemeral memory given by the orchestrator, but has not yet
+    // been sent to the client.
+    pending: u64,
 }
 
 pub type ClientList = Arc<Mutex<BTreeMap<u32, Arc<Client>>>>;
-static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl Client {
     /// Thread that waits for incoming client connections.
     /// Spawns a new client thread for each connection.
@@ -112,64 +112,62 @@ impl Client {
         }
     }
 
-    /// Handle an EphMemGrant from the orchestrator. May forward the grant
-    /// to the client if this is the last grant for the request.
+    /// Assign a pending grant to a client.
     ///
-    /// `id` - The allocation ID of the request that this grant is for.
-    /// `more` - Whether the orchestrator will send more grants for this request.
-    /// `allocation` - The allocation to send to the client. If None, the client
-    /// will be sent a grant with size 0, indicating that the request was
-    /// denied.
-    fn send_eph_mem_grant(
-        &self,
-        id: u64,
-        more: bool,
-        allocation: Option<EphAllocation>,
-    ) -> std::io::Result<()> {
+    /// `allocation` - The allocation to send to the client.
+    fn assign_pending_grant(&self, allocation: EphAllocation) -> std::io::Result<()> {
         let mut mut_state = self.mut_state.lock().unwrap();
-        let Some(pending_request) = &mut mut_state.pending_request else {
-            return Err(std::io::Error::other("No pending request to respond to"));
-        };
-        if pending_request.id != id {
-            return Err(std::io::Error::other(format!(
-                "Pending request ID {} does not match grant ID {}",
-                pending_request.id, id
-            )));
-        }
 
         // Keep track of the allocations received for this request.
-        if let Some(allocation) = allocation {
-            // Invariant: received <= requested. It starts at 0 and only grows
-            // through this check, so the subtraction can't underflow.
-            let remaining = pending_request.requested - pending_request.received;
-            if allocation.size > remaining {
-                return Err(std::io::Error::other(format!(
-                    "Grant of {} bytes exceeds the {} bytes still outstanding for request {} ({} requested)",
-                    allocation.size, remaining, id, pending_request.requested
-                )));
-            }
-            // Can't overflow: received + size <= requested.
-            pending_request.received += allocation.size;
-            pending_request.allocations.push(allocation);
+        // The subtraction may underflow if a client has lowered its requested
+        // amount, so saturate the subtraction at 0.
+        let remaining = mut_state
+            .requested
+            .saturating_sub(mut_state.granted + mut_state.pending);
+        if allocation.size > remaining {
+            return Err(std::io::Error::other(format!(
+                "Grant of {} bytes exceeds the {} bytes still outstanding for request ({} requested)",
+                allocation.size, remaining, mut_state.requested
+            )));
         }
+        // Can't overflow: remaining >= allocation.size
+        mut_state.pending += allocation.size;
+        mut_state.pending_allocations.insert(allocation);
 
-        // Don't send a grant to the client until we have received all the
-        // grants from the orchestrator.
-        if more {
-            return Ok(());
-        }
+        Ok(())
+    }
 
-        // Take ownership of the pending request, so we can take another mutable
-        // reference to mut_state via mut_state.allocations.
-        let pending = mut_state.pending_request.take().unwrap();
-        mut_state.allocations.extend(pending.allocations);
-
+    // Send the pending grants of ephemeral memory to the client.
+    fn send_eph_mem_grant(&self) -> std::io::Result<()> {
+        let mut mut_state = self.mut_state.lock().unwrap();
+        // No need to inform the client of allocations that are pending release.
+        let (new_allocs, pending_release_allocs): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut mut_state.pending_allocations)
+                .into_iter()
+                .partition(|alloc| !alloc.pending_release);
+        let pending = new_allocs.iter().map(|alloc| alloc.size).sum::<u64>();
+        mut_state.granted += pending;
+        mut_state.allocations.extend(new_allocs);
+        // Keep the pending allocations so the DaxDevice drop handler can
+        // delete the associated DAX device when the orchestrator releases it.
+        // (TODO).
+        mut_state.pending_allocations.extend(pending_release_allocs);
+        mut_state.pending = mut_state
+            .pending_allocations
+            .iter()
+            .map(|alloc| alloc.size)
+            .sum::<u64>();
         // Drop the lock for the high latency IO
         drop(mut_state);
 
+        // No need to send a message if there is no pending grant.
+        if pending == 0 {
+            return Ok(());
+        }
+
         let resp = ConsumerCommand::new(
             ConsumerFunction::EphMemGrant,
-            Some(pending.received),
+            Some(pending),
             // The client doesn't need to know the DCD offset.
             None,
         );
@@ -178,53 +176,103 @@ impl Client {
         self.connection.send(serde_json::to_value(&resp)?)
     }
 
+    pub fn flush_pending_grants(clients: &ClientList) {
+        // Copy the clients, so we can send grants without holding the lock.
+        let clients_copy: Vec<(u32, Arc<Client>)> = clients
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(pid, client)| (*pid, client.clone()))
+            .collect();
+        for (pid, client) in clients_copy {
+            // Don't let one client's failure stop the others from getting their grants.
+            if let Err(e) = client.send_eph_mem_grant() {
+                eprintln!("Failed to send grant to client {pid}: {e}");
+            }
+        }
+    }
+
     /// Handle an EphMemGrant from the orchestrator.
     ///
     /// `clients` - The list of clients
-    /// `alloc_id` - The allocation ID of the request that this grant is for
     /// `size` - The size of the ephemeral memory allocated to this VM
     /// `offset` - The offset of the allocation in the VM's DCD.
-    /// `more` - Whether the orchestrator will send more grants for this request
     /// `dax_device` - The DAX device for the allocation.
     pub fn handle_eph_mem_grant(
         clients: &ClientList,
-        alloc_id: u64,
         size: u64,
         offset: u64,
-        more: bool,
         dax_device: DaxDevice,
     ) -> std::io::Result<()> {
-        // Find the client with the matching pending request.
+        // Assign this grant to the client that has the smallest percent
+        // of its request fulfilled.
         let mut found_client: Option<Arc<Client>> = None;
+        let mut min_percent_fulfilled: u64 = 100;
         let clients_locked = clients.lock().unwrap();
         for client in clients_locked.values() {
             let mut_state = client.mut_state.lock().unwrap();
-            if let Some(pending_request) = &mut_state.pending_request
-                && pending_request.id == alloc_id
-            {
+            let percent_fulfilled = ((mut_state.granted + mut_state.pending) * 100)
+                .checked_div(mut_state.requested)
+                .unwrap_or(100);
+            let space_left = mut_state
+                .requested
+                .saturating_sub(mut_state.granted + mut_state.pending);
+            if percent_fulfilled < min_percent_fulfilled && space_left >= size {
+                min_percent_fulfilled = percent_fulfilled;
                 found_client = Some(client.clone());
+            }
+
+            // We're not going to do better than 0%
+            if percent_fulfilled == 0 {
                 break;
             }
         }
         drop(clients_locked);
 
+        // Assign the grant to the chosen client, but don't let the client know
+        // until the orchestrator has finished sending all of the grants. The
+        // caller flushes them with `flush_pending_grants()`.
         if let Some(client) = found_client {
-            return client.send_eph_mem_grant(
-                alloc_id,
-                more,
-                Some(EphAllocation {
-                    offset,
-                    size,
-                    dax_device,
-                }),
-            );
+            client.assign_pending_grant(EphAllocation {
+                offset,
+                size,
+                dax_device,
+                pending_release: false,
+            })
         } else {
             // TODO: We need to add a path to return memory to the orchestrator
             // if no client is found.
-            eprintln!(
-                "No client found with a pending request for id {}. Dropping grant with size {} and offset {}",
-                alloc_id, size, offset
-            );
+            Err(std::io::Error::other(format!(
+                "No suitable client found for grant with size {} and offset {}",
+                size, offset
+            )))
+        }
+    }
+
+    pub fn handle_eph_mem_release(
+        clients: &ClientList,
+        size: u64,
+        offset: u64,
+    ) -> std::io::Result<()> {
+        let clients_locked = clients.lock().unwrap();
+        for client in clients_locked.values() {
+            let remove_fn = |tree: &mut BTreeSet<EphAllocation>| {
+                let mut to_remove = Vec::new();
+                let mut total_removed = 0;
+                for alloc in tree.range((Included(offset), Excluded(offset + size))) {
+                    if alloc.offset >= offset && alloc.offset + alloc.size <= offset + size {
+                        to_remove.push(alloc.offset);
+                        total_removed += alloc.size;
+                    }
+                }
+                for off in to_remove {
+                    tree.remove(&off);
+                }
+                total_removed
+            };
+            let mut mut_state = client.mut_state.lock().unwrap();
+            mut_state.pending -= remove_fn(&mut mut_state.pending_allocations);
+            mut_state.granted -= remove_fn(&mut mut_state.allocations);
         }
         Ok(())
     }
@@ -255,6 +303,7 @@ impl Client {
         orchestrator: &Arc<Orchestrator>,
     ) -> std::io::Result<Self> {
         let c1 = clients.clone();
+        let o1 = orchestrator.clone();
         let close_handler = move |ctype: ConnectionType, id: u64| {
             if let ConnectionType::Client(client_pid) = ctype {
                 let mut clients = c1.lock().unwrap();
@@ -262,16 +311,23 @@ impl Client {
                 let is_current = clients
                     .get(&client_pid)
                     .is_some_and(|c| c.connection.id() == id);
-                if is_current {
-                    clients.remove(&client_pid);
+                let client = if is_current {
+                    clients.remove(&client_pid)
+                } else {
+                    None
+                };
+                drop(clients);
+
+                if let Some(client) = client {
+                    let _ = client.handle_eph_mem_request(&c1, &o1, 0);
                 }
             }
         };
         let c2 = clients.clone();
-        let o = orchestrator.clone();
+        let o2 = orchestrator.clone();
         let msg_handler = move |ctype: ConnectionType, val: serde_json::Value| {
             if let ConnectionType::Client(_) = ctype {
-                Client::msg_handler(c2.clone(), ctype, o.clone(), val)
+                Client::msg_handler(c2.clone(), ctype, o2.clone(), val)
             } else {
                 // This should never happen by construction. Keep this branch
                 // to keep the compiler happy.
@@ -291,7 +347,10 @@ impl Client {
             connection,
             mut_state: Mutex::new(ClientMutState {
                 allocations: BTreeSet::new(),
-                pending_request: None,
+                pending_allocations: BTreeSet::new(),
+                requested: 0,
+                granted: 0,
+                pending: 0,
             }),
         })
     }
@@ -315,91 +374,137 @@ impl Client {
 
         match cmd.function {
             ConsumerFunction::EphMemRequest => {
-                let Some(client) = clients.lock().unwrap().get(&client_pid).cloned() else {
+                let clients_lock = clients.lock().unwrap();
+                let Some(client) = clients_lock.get(&client_pid).cloned() else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         format!("Client with PID {client_pid} not found"),
                     ));
                 };
+                drop(clients_lock);
                 let Some(amount) = cmd.size else {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "Missing size in EphMemRequest",
                     ));
                 };
-                let id = REQUEST_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Self::handle_eph_mem_request(client, &orchestrator, id, amount)
+                let Some(amount) =
+                    amount.checked_next_multiple_of(eph_proto::EPH_MEM_DONATION_GRANULARITY)
+                else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "Requested size {} is too large to align to donation granularity {}",
+                            amount,
+                            eph_proto::EPH_MEM_DONATION_GRANULARITY
+                        ),
+                    ));
+                };
+                client.handle_eph_mem_request(&clients, &orchestrator, amount)
             }
-            ConsumerFunction::EphMemGrant => Err(std::io::Error::new(
+            other => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Received EphMemGrant command from client {client_pid}"),
+                format!(
+                    "Received invalid command ({}) from client {client_pid}",
+                    serde_json::to_string(&other).unwrap_or_else(|_| "<invalid>".to_string())
+                ),
             )),
         }
     }
 
     fn handle_eph_mem_request(
-        client: Arc<Client>,
+        &self,
+        clients: &ClientList,
         orchestrator: &Arc<Orchestrator>,
-        alloc_id: u64,
         amount: u64,
     ) -> std::io::Result<()> {
-        let Some(amount) = amount.checked_next_multiple_of(eph_proto::EPH_MEM_DONATION_GRANULARITY)
+        let request_guard = orchestrator.lock_request();
+        let clients = clients.lock().unwrap();
+        let mut mut_state = self.mut_state.lock().unwrap();
+
+        // Sum the requests of all of the other clients, plus this one's new
+        // request. Another client's request is untrusted input, so don't let
+        // the sum overflow.
+        let Some(new_total_amount) = clients
+            .values()
+            .filter(|c| c.connection.id() != self.connection.id())
+            .try_fold(amount, |total, c| {
+                total.checked_add(c.mut_state.lock().unwrap().requested)
+            })
         else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Requested size {} is too large to align to donation granularity {}",
-                    amount,
-                    eph_proto::EPH_MEM_DONATION_GRANULARITY
-                ),
+                "Total requested ephemeral memory is too large",
             ));
         };
-        if amount == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Requested size must be greater than 0",
-            ));
-        }
-        let mut mut_state = client.mut_state.lock().unwrap();
-        // Don't accept another reservation from this client if they already
-        // have a pending request.
-        // TODO: This may be an indication that a request has timed out without
-        // receiving more=false from the orchestrator. When we get a duplicate
-        // request, we should send a "invalidation" message to the consumer for
-        // the previous request, and start the new request.
-        if mut_state.pending_request.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "Client already has a pending ephemeral memory request",
-            ));
-        }
-
-        let new_request = PendingRequest {
-            id: alloc_id,
-            requested: amount,
-            received: 0,
-            allocations: Vec::new(),
-        };
-        mut_state.pending_request = Some(new_request);
+        let old_requested_size = mut_state.requested;
+        mut_state.requested = amount;
         //Drop the mut_state because we don't want to hold it while doing IO
         drop(mut_state);
+        drop(clients);
 
         // Forward the ephemeral memory request to the orchestrator
-        let result = orchestrator.request_eph_mem(alloc_id, amount);
-
-        // If the request failed, send an empty EphMemGrant to the client, which
-        // will also unset pending_request.
-        // There is potentially a race condition where another request sets
-        // pending request before we unset it. We are protected from this
-        // for two reasons:
-        // 1. pending_request will not be set again when already set
-        // 2. Consumer requests are serialized by msg_handler
-        if result.is_err()
-            && let Err(e) = client.send_eph_mem_grant(alloc_id, false, None)
-        {
-            eprintln!("Failed to send EphMemGrant to client: {}", e);
+        if let Err(e) = orchestrator.request_eph_mem(new_total_amount) {
+            // The request failed for some reason, so revert the client's requested amount
+            let mut mut_state = self.mut_state.lock().unwrap();
+            mut_state.requested = old_requested_size;
+            return Err(e);
         }
-        result
+        // We normally don't hold locks across IO, but ephemeral memory requests
+        // are not on the critical path, so it's fine in this case.
+        drop(request_guard);
+
+        // If the orchestrator sees a lower requested amount than before, it
+        // won't revoke memory. It will just not grant more memory if the total
+        // granted amount is already higher than the new requested amount.
+        // Instead, we should tell the orchestrator which allocations we want to,
+        // so it can release them.
+        // We don't need to remove these allocations from the client state because
+        // that will happen when the orchestrator revokes the memory.
+        if amount < old_requested_size {
+            let mut mut_state = self.mut_state.lock().unwrap();
+            let mut to_revoke = Vec::new();
+            let mut revoked_size = 0;
+            let size_to_revoke = (mut_state.granted + mut_state.pending).saturating_sub(amount);
+            let mut find_victims = |tree: &mut BTreeSet<EphAllocation>| {
+                let mut removed_set = BTreeSet::new();
+                // Assume the most recently allocated memory is the least important,
+                // releasing it first.
+                while let Some(mut alloc) = tree.pop_last() {
+                    if revoked_size >= size_to_revoke {
+                        removed_set.insert(alloc);
+                        break;
+                    }
+                    if alloc.pending_release {
+                        // Allocations that are already pending release will be
+                        // eventually removed, so we will count them towards the
+                        // amount to be revoked. Technically, it would be better
+                        // to sum up all of the pending releases first, but this
+                        // lazy is good enough.
+                        revoked_size += alloc.size;
+                        removed_set.insert(alloc);
+                        continue;
+                    }
+                    alloc.pending_release = true;
+                    to_revoke.push((alloc.size, alloc.offset));
+                    revoked_size += alloc.size;
+                    removed_set.insert(alloc);
+                }
+
+                tree.extend(removed_set);
+            };
+            // Look for victims in the pending set first, since those haven't
+            // been sent to the client yet.
+            find_victims(&mut mut_state.pending_allocations);
+            find_victims(&mut mut_state.allocations);
+            drop(mut_state);
+
+            for (size, offset) in to_revoke {
+                orchestrator.release_eph_mem(size, offset)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
