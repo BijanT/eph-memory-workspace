@@ -247,6 +247,24 @@ impl ConsumerState {
         self.fulfill_eph_mem_request(vms)
     }
 
+    pub fn handle_eph_mem_release(&self, offset: u64, size: u64) {
+        if offset.checked_add(size).is_none() {
+            eprintln!(
+                "Consumer VM {} tried to release memory with offset {} and size {} which would overflow",
+                self.vm().qmp_socket_path.display(),
+                offset,
+                size
+            );
+            return;
+        }
+        let allocs_to_release = self
+            .mut_state
+            .lock()
+            .unwrap()
+            .find_covered_allocations(offset, size);
+        Vm::return_eph_memory_from_consumer(&allocs_to_release);
+    }
+
     /// Returns the `Vm` that owns this consumer state. Since a `ConsumerState`
     /// is only ever reachable through the `Arc<Vm>` that owns it, the parent
     /// Vm is guaranteed to still be alive here.
@@ -622,7 +640,11 @@ impl ConsumerState {
         !wait_result.timed_out()
     }
 
-    fn send_consumer_grant(&self, allocations: &[Arc<EphAllocation>]) -> std::io::Result<()> {
+    fn send_consumer_cmd(
+        &self,
+        func: ConsumerFunction,
+        allocations: &[Arc<EphAllocation>],
+    ) -> std::io::Result<()> {
         let mut conn = self.vsock_conn.lock().unwrap();
 
         let Some(conn) = conn.as_mut() else {
@@ -635,17 +657,22 @@ impl ConsumerState {
         let mut iter = allocations.iter().peekable();
         while let Some(alloc) = iter.next() {
             let more = iter.peek().is_some();
-            let response = ConsumerCommand::new(
-                ConsumerFunction::EphMemGrant,
-                Some(alloc.size()),
-                Some(alloc.consumer_offset),
-            )
-            .with_more(more);
+            let response =
+                ConsumerCommand::new(func, Some(alloc.size()), Some(alloc.consumer_offset))
+                    .with_more(more);
 
             response.send(conn)?;
         }
 
         Ok(())
+    }
+
+    fn send_consumer_grant(&self, allocations: &[Arc<EphAllocation>]) -> std::io::Result<()> {
+        self.send_consumer_cmd(ConsumerFunction::EphMemGrant, allocations)
+    }
+
+    pub fn send_consumer_release(&self, allocations: &[Arc<EphAllocation>]) -> std::io::Result<()> {
+        self.send_consumer_cmd(ConsumerFunction::EphMemRelease, allocations)
     }
 
     pub fn get_qom_path(&self) -> &str {
@@ -865,6 +892,34 @@ fn consumer_cmd_dispatacher(
                     consumer.qmp_socket_path.display()
                 );
             }
+        }
+        ConsumerFunction::EphMemRelease => {
+            let Some(size) = cmd.size else {
+                eprintln!(
+                    "{} command from consumer VM at '{}' missing size argument",
+                    cmd.to_json()
+                        .expect("ConsumerCommand is always serializable"),
+                    consumer.qmp_socket_path.display()
+                );
+                return Ok(());
+            };
+            let Some(offset) = cmd.offset else {
+                eprintln!(
+                    "{} command from consumer VM at '{}' missing offset argument",
+                    cmd.to_json()
+                        .expect("ConsumerCommand is always serializable"),
+                    consumer.qmp_socket_path.display()
+                );
+                return Ok(());
+            };
+            // Unwrap is safe because consumer_cmd_dispatcher() is only
+            // called from consumer_thread(), which only operates on
+            // consumer VMs.
+            consumer
+                .consumer
+                .as_ref()
+                .unwrap()
+                .handle_eph_mem_release(offset, size);
         }
         _ => {
             eprintln!(

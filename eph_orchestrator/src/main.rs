@@ -146,6 +146,13 @@ impl Vm {
             consumer_duration.as_micros(),
             donor_duration.as_micros()
         );
+
+        // Now that the memory has been returned, we can politely inform
+        // ephemerald of the released memory.
+        for_each_parallel(&consumer_groups, |(vm_path, allocs)| {
+            let consumer_state = vm_map[vm_path].consumer.as_ref().unwrap();
+            let _ = consumer_state.send_consumer_release(allocs);
+        });
     }
 
     /// Returns the Vm at the specified path, if it exists and is a consumer VM.
