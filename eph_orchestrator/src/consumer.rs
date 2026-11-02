@@ -24,6 +24,11 @@ pub struct ConsumerState {
     vsock_conn: Mutex<Option<VsockStream>>,
     /* Mutable state for the consumer VM protected by a mutex */
     mut_state: Mutex<ConsumerMutState>,
+    /* Mutex to prevent us from trying to fulfill an ephemeral memory request
+     * concurrently. This is necessary because we don't want to hold the
+     * mut_state lock across IO.
+     */
+    fulfill_mutex: Mutex<()>,
     /* Condition variable for signaling a CXL add DC event */
     add_dc_cond: Condvar,
     /* Condition variable for signaling a CXL release DC event */
@@ -36,6 +41,8 @@ struct ConsumerMutState {
      * which donor supplied the memory for each area.
      */
     allocated_areas: BTreeMap<u64, Arc<EphAllocation>>,
+    /* The total amount of ephemeral memory requested by the consumer */
+    requested: u64,
 }
 
 impl ConsumerState {
@@ -89,7 +96,9 @@ impl ConsumerState {
                     vsock_conn: Mutex::new(None),
                     mut_state: Mutex::new(ConsumerMutState {
                         allocated_areas: BTreeMap::new(),
+                        requested: 0,
                     }),
+                    fulfill_mutex: Mutex::new(()),
                     add_dc_cond: Condvar::new(),
                     release_dc_cond: Condvar::new(),
                 };
@@ -99,38 +108,30 @@ impl ConsumerState {
         Ok(None)
     }
 
-    pub fn handle_eph_mem_request(
-        &self,
-        vms: &VmList,
-        size: u64,
-        request_id: u64,
-    ) -> std::io::Result<()> {
-        // The consumer allocation is not latency sensitive, so we're fine
-        // printing here.
-        log!(
-            LogLevel::Info,
-            "Consumer VM {} requesting ephemeral memory of size {}",
-            self.vm().qmp_socket_path.display(),
-            size
-        );
+    fn fulfill_eph_mem_request(&self, vms: &VmList) -> std::io::Result<()> {
+        let _guard = self.fulfill_mutex.lock().unwrap();
 
-        // Make sure the size is EPH_MEM_DONATION_GRANULARITY aligned
-        let Some(size) = size.checked_next_multiple_of(eph_proto::EPH_MEM_DONATION_GRANULARITY)
-        else {
-            return Err(std::io::Error::other(
-                "Requested size is too large to align to donation granularity",
-            ));
+        // How far away are we from fulfilling the requested amount?
+        let deficit = {
+            let mut_state = self.mut_state.lock().unwrap();
+            mut_state
+                .requested
+                .saturating_sub(mut_state.granted_or_in_flight_size())
         };
+        // We have fulfilled our request, so there's nothing to do.
+        if deficit == 0 {
+            return Ok(());
+        }
 
-        let mut rsvd_allocs = self.reserve_memory(size);
+        // Reserve space in the DCD for the deficit amount.
+        let mut rsvd_allocs = self.reserve_memory(deficit);
         if rsvd_allocs.is_empty() {
-            // TODO: Replace this with a harmless message to the consumer that
-            // its request will not be satisfied.
             return Err(std::io::Error::other(
                 "Consumer VM has no space available for the requested allocation",
             ));
         };
 
+        // Ask the donors if they can fulfill the request.
         let backed_allocs = donor::DonorState::allocate_eph_memory(vms, &rsvd_allocs);
         log!(
             LogLevel::Debug,
@@ -140,7 +141,7 @@ impl ConsumerState {
             backed_allocs
         );
 
-        // Not all of the EphAllocations we reserved may  have been backed by
+        // Not all of the EphAllocations we reserved may have been backed by
         // the donor. Release any that weren't backed.
         let offsets_to_drop = rsvd_allocs[backed_allocs..]
             .iter()
@@ -202,12 +203,12 @@ impl ConsumerState {
 
         // Send message to the consumer guest over the vsock connection to
         // notify it that the dynamic capacity has been added.
-        if let Err(e) = self.send_consumer_response(Some(request_id), &live) {
+        if let Err(e) = self.send_consumer_grant(&live) {
             // If we can't notify the consumer, there's no point in keeping the
             // allocation, so remove it.
             Vm::return_eph_memory_from_consumer(&live);
             return Err(std::io::Error::other(format!(
-                "Failed to send consumer response: {}",
+                "Failed to send consumer grant: {}",
                 e
             )));
         }
@@ -220,6 +221,30 @@ impl ConsumerState {
         );
 
         Ok(())
+    }
+
+    pub fn handle_eph_mem_request(&self, vms: &VmList, size: u64) -> std::io::Result<()> {
+        // The consumer allocation is not latency sensitive, so we're fine
+        // printing here.
+        log!(
+            LogLevel::Info,
+            "Consumer VM {} requesting ephemeral memory of size {}",
+            self.vm().qmp_socket_path.display(),
+            size
+        );
+
+        // Make sure the size is EPH_MEM_DONATION_GRANULARITY aligned
+        let size = size
+            .checked_next_multiple_of(eph_proto::EPH_MEM_DONATION_GRANULARITY)
+            .ok_or_else(|| {
+                std::io::Error::other(
+                    "Requested size is too large to align to donation granularity",
+                )
+            })?
+            .min(self.size); // If doesn't make sense to request more than the DCD can hold
+        self.mut_state.lock().unwrap().requested = size;
+
+        self.fulfill_eph_mem_request(vms)
     }
 
     /// Returns the `Vm` that owns this consumer state. Since a `ConsumerState`
@@ -597,11 +622,7 @@ impl ConsumerState {
         !wait_result.timed_out()
     }
 
-    fn send_consumer_response(
-        &self,
-        id: Option<u64>,
-        allocations: &[Arc<EphAllocation>],
-    ) -> std::io::Result<()> {
+    fn send_consumer_grant(&self, allocations: &[Arc<EphAllocation>]) -> std::io::Result<()> {
         let mut conn = self.vsock_conn.lock().unwrap();
 
         let Some(conn) = conn.as_mut() else {
@@ -619,7 +640,6 @@ impl ConsumerState {
                 Some(alloc.size()),
                 Some(alloc.consumer_offset),
             )
-            .with_id(id)
             .with_more(more);
 
             response.send(conn)?;
@@ -650,6 +670,14 @@ impl ConsumerMutState {
         }
 
         overlapping_allocs
+    }
+
+    pub fn granted_or_in_flight_size(&self) -> u64 {
+        self.allocated_areas
+            .values()
+            .filter(|allocation| !allocation.is_release_requested())
+            .map(|allocation| allocation.size())
+            .sum()
     }
 }
 
@@ -820,9 +848,7 @@ fn consumer_cmd_dispatacher(
 ) -> std::io::Result<()> {
     match cmd.function {
         ConsumerFunction::EphMemRequest => {
-            if let Some(size) = cmd.size
-                && let Some(request_id) = cmd.id
-            {
+            if let Some(size) = cmd.size {
                 // Unwrap is safe because consumer_cmd_dispatcher() is only
                 // called from consumer_thread(), which only operates on
                 // consumer VMs.
@@ -830,10 +856,10 @@ fn consumer_cmd_dispatacher(
                     .consumer
                     .as_ref()
                     .unwrap()
-                    .handle_eph_mem_request(vms, size, request_id)?;
+                    .handle_eph_mem_request(vms, size)?;
             } else {
                 eprintln!(
-                    "{} command from consumer VM at '{}' missing size or request_id argument",
+                    "{} command from consumer VM at '{}' missing size argument",
                     cmd.to_json()
                         .expect("ConsumerCommand is always serializable"),
                     consumer.qmp_socket_path.display()
