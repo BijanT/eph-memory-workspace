@@ -1,4 +1,5 @@
 #include <atomic>
+#include <climits>
 #include <csetjmp>
 #include <csignal>
 #include <cstdint>
@@ -8,6 +9,7 @@
 #include <fcntl.h>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -51,6 +53,11 @@ static const char *EphemeralFuncStrings[] = {
 
 struct libephmem_file {
 	int fd;
+	~libephmem_file() { close(fd); }
+};
+
+struct libephmem_mapping {
+	int fd;
 	size_t size;
 	void *ptr;
 };
@@ -58,7 +65,8 @@ struct libephmem_file {
 struct libephmem_handle {
 	void *ptr;
 	size_t size;
-	std::unique_ptr<struct libephmem_file> file;
+	off_t file_offset;
+	std::shared_ptr<struct libephmem_file> file;
 };
 
 struct libephmem_attempt_context {
@@ -403,44 +411,112 @@ int libephmem_release(size_t amount) {
 	return libephmem_change_request(amount, false);
 }
 
-static std::unique_ptr<struct libephmem_file> libephmem_create_file(size_t size) {
+/*
+ * Creates a file of the given size in EphMFS and maps it. On failure, returns
+ * std::nullopt and sets *err to -errno.
+ */
+static std::optional<struct libephmem_mapping> libephmem_create_file(size_t size, int *err) {
 	int fd;
+	void *ptr;
 	int open_flags = O_RDWR | O_EXCL | O_TMPFILE;
-	std::unique_ptr<struct libephmem_file> file = std::make_unique<struct libephmem_file>();
 
 	fd = open(libephmfs_ephmfs_dir.c_str(), open_flags, 0600);
 	if (fd == -1) {
+		*err = -errno;
 		perror("Failed to create temporary file in EphMFS");
-		return nullptr;
+		return std::nullopt;
 	}
 
 	if (ftruncate(fd, size)) {
+		*err = -errno;
 		perror("Failed to truncate file!\n");
 		close(fd);
-		return nullptr;
+		return std::nullopt;
 	}
 
-	file->ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (file->ptr == MAP_FAILED) {
+	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (ptr == MAP_FAILED) {
+		*err = -errno;
 		perror("mmap failed");
 		close(fd);
-		return nullptr;
+		return std::nullopt;
 	}
 
 	if (libephmem_using_pkey()) {
-		int ret = pkey_mprotect(file->ptr, size, PROT_READ | PROT_WRITE,
+		int ret = pkey_mprotect(ptr, size, PROT_READ | PROT_WRITE,
 			ephmem_pkey);
 		if (ret == -1) {
+			*err = -errno;
 			perror("pkey_mprotect failed");
-			munmap(file->ptr, size);
+			munmap(ptr, size);
 			close(fd);
-			return nullptr;
+			return std::nullopt;
 		}
 	}
 
-	file->fd = fd;
-	file->size = size;
-	return file;
+	return libephmem_mapping{fd, size, ptr};
+}
+
+ssize_t libephmem_alloc_multi(size_t size, size_t count, struct libephmem_handle **handles) {
+	size_t num_allocated;
+	int err = 0;
+
+	std::call_once(libephmem_initialized, libephmem_init);
+	if (!libephmem_setup_succeeded) {
+		fprintf(stderr, "libephmem_alloc_multi: Initialization failed\n");
+		return -EINVAL;
+	}
+	if (size == 0 || count == 0 || count > SSIZE_MAX || handles == nullptr) {
+		fprintf(stderr, "libephmem_alloc_multi: Invalid arguments\n");
+		return -EINVAL;
+	}
+	if (size % sysconf(_SC_PAGESIZE) != 0) {
+		fprintf(stderr, "libephmem_alloc_multi: size must be a multiple of the page size\n");
+		return -EINVAL;
+	}
+	if (count > SIZE_MAX / size) {
+		fprintf(stderr, "libephmem_alloc_multi: size * count would overflow\n");
+		return -EINVAL;
+	}
+
+	/* One file and one mapping back every handle */
+	std::optional<struct libephmem_mapping> mapping = libephmem_create_file(size * count, &err);
+	if (!mapping) {
+		return err;
+	}
+	std::shared_ptr<struct libephmem_file> file(new (std::nothrow) libephmem_file{mapping->fd});
+	if (file == nullptr) {
+		munmap(mapping->ptr, mapping->size);
+		close(mapping->fd);
+		return -ENOMEM;
+	}
+
+	for (num_allocated = 0; num_allocated < count; num_allocated++) {
+		struct libephmem_handle *handle = new (std::nothrow) struct libephmem_handle();
+		if (handle == nullptr) {
+			break;
+		}
+		handle->ptr = static_cast<char *>(mapping->ptr) + num_allocated * size;
+		handle->size = size;
+		handle->file_offset = num_allocated * size;
+		handle->file = file;
+		handles[num_allocated] = handle;
+	}
+
+	/*
+	 * Unmap the part of the mapping that no handle covers. The fd is closed
+	 * when the last handle is freed, or when `file` goes out of scope if there
+	 * are none.
+	 */
+	if (num_allocated < count) {
+		munmap(static_cast<char *>(mapping->ptr) + num_allocated * size,
+		       (count - num_allocated) * size);
+	}
+
+	if (num_allocated == 0) {
+		return -ENOMEM;
+	}
+	return num_allocated;
 }
 
 /*
@@ -451,20 +527,9 @@ static std::unique_ptr<struct libephmem_file> libephmem_create_file(size_t size)
 struct libephmem_handle *libephmem_alloc(size_t size) {
 	struct libephmem_handle *handle;
 
-	std::call_once(libephmem_initialized, libephmem_init);
-	if (!libephmem_setup_succeeded) {
-		fprintf(stderr, "libephmem_alloc: Initialization failed\n");
+	if (libephmem_alloc_multi(size, 1, &handle) != 1) {
 		return nullptr;
 	}
-
-	handle = new struct libephmem_handle();
-	handle->file = libephmem_create_file(size);
-	if (handle->file == nullptr) {
-		delete handle;
-		return nullptr;
-	}
-	handle->ptr = handle->file->ptr;
-	handle->size = size;
 	return handle;
 }
 
@@ -473,11 +538,13 @@ void libephmem_free(struct libephmem_handle *handle) {
 		return;
 	}
 
-	if (handle->file != nullptr) {
-		munmap(handle->file->ptr, handle->file->size);
-		close(handle->file->fd);
+	if (fallocate(handle->file->fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+		      handle->file_offset, handle->size)) {
+		perror("libephmem_free: Failed to punch hole in EphMFS file");
 	}
+	munmap(handle->ptr, handle->size);
 
+	/* The file is closed when the last handle that references it is deleted */
 	delete handle;
 }
 

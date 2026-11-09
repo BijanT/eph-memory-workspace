@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -49,7 +50,7 @@ const int BLOCK_SIZE = 2 * 1024 * 1024; // 2 MB
 std::atomic<size_t> eph_mem_granted_bytes{0};
 // Limit on how many ephemeral memory blocks are allocated in one pass of the
 // main loop, so a large grant does not stall a single access.
-const unsigned long MAX_EPH_ALLOCS_PER_ITER = 16;
+const unsigned long MAX_EPH_ALLOCS_PER_ITER = 32;
 
 /*
  * Called by libephmem whenever ephemeral memory is granted. Runs on
@@ -218,19 +219,23 @@ int main(int argc, char *argv[]) {
 		// too. This is done before starting the access timer so it does not
 		// count towards access latency.
 		unsigned long granted_blocks = eph_mem_granted_bytes.load() / BLOCK_SIZE;
-		unsigned long new_blocks = 0;
-		while (eph_memory.size() < granted_blocks &&
-		       eph_memory.size() < eph_target_blocks &&
-		       new_blocks < MAX_EPH_ALLOCS_PER_ITER) {
-			struct libephmem_handle *handle = libephmem_alloc(BLOCK_SIZE);
-			if (handle == nullptr)
-				break; // Try again on a later pass
-			eph_memory.push_back(handle);
-			eph_memory_rmap.push_back(-1);
-			new_blocks++;
+		unsigned long wanted_blocks = std::min(granted_blocks, eph_target_blocks);
+		if (wanted_blocks > eph_memory.size()) {
+			unsigned long new_blocks = std::min(wanted_blocks - eph_memory.size(),
+							    MAX_EPH_ALLOCS_PER_ITER);
+			struct libephmem_handle *new_handles[MAX_EPH_ALLOCS_PER_ITER];
+			// We may get fewer handles than we asked for. The rest will be
+			// requested again on a later pass.
+			ssize_t num_allocated = libephmem_alloc_multi(BLOCK_SIZE, new_blocks, new_handles);
+			for (ssize_t i = 0; i < num_allocated; i++) {
+				eph_memory.push_back(new_handles[i]);
+				eph_memory_rmap.push_back(-1);
+			}
+			if (num_allocated > 0) {
+				update_eph_memory_eviction_selector(eph_memory_eviction_selector,
+								    eph_memory.size());
+			}
 		}
-		if (new_blocks > 0)
-			update_eph_memory_eviction_selector(eph_memory_eviction_selector, eph_memory.size());
 
 		auto start_time = std::chrono::steady_clock::now();
 		int block_id = block_selector(rng);

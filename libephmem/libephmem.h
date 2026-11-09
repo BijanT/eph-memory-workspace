@@ -2,6 +2,7 @@
 #define _LIBEPHMEM_H_
 
 #include <stddef.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 #include <type_traits>
@@ -60,11 +61,25 @@ int libephmem_release(size_t amount);
 
 /*
  * Allocates ephemeral memory of the specified size.
- * @param size: The size of the ephemeral memory allocation in bytes.
+ * @param size: The size of the ephemeral memory allocation in bytes. Must be a
+ * multiple of the page size.
  * @return: A pointer to a struct libephmem_handle representing the ephemeral
  * memory allocation, or NULL if the allocation fails.
  */
 struct libephmem_handle *libephmem_alloc(size_t size);
+/*
+ * Allocates count ephemeral memory handles of size bytes each, all backed by a
+ * single file. Each handle can be used and freed independently of the others.
+ * @param size: The size of each ephemeral memory allocation in bytes. Must be
+ * a multiple of the page size.
+ * @param count: The number of handles to allocate.
+ * @param handles: An array of at least count entries. The first N entries are
+ * set to the new handles, where N is the return value. The rest are untouched.
+ * @return: The number of handles allocated, which is less than count if
+ * allocation failed part way through. -EINVAL on invalid arguments, -errno on
+ * other errors.
+ */
+ssize_t libephmem_alloc_multi(size_t size, size_t count, struct libephmem_handle **handles);
 /*
  * Frees the ephemeral memory allocation associated with the specified handle.
  * Calling this while the handle is in an attempt context will result in
