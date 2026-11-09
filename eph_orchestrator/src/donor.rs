@@ -358,6 +358,9 @@ impl DonorState {
             self.vm().qmp_socket_path.display(),
             revoke_size
         );
+
+        // Another donor might be able to satisfy the requests we just revoked
+        crate::FULFILL_NOTIFY.notify();
         Ok(())
     }
 

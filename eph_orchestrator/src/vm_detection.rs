@@ -168,5 +168,10 @@ fn check_new_vm(
 
     vms.write().unwrap().insert(path.to_path_buf(), new_vm);
 
+    if is_donor {
+        // See if the new donor can satisfy any outstanding requests
+        crate::FULFILL_NOTIFY.notify();
+    }
+
     Ok(())
 }

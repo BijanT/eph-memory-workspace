@@ -6,7 +6,7 @@ mod vm_detection;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, Weak, mpsc};
 use std::thread;
 
 use consumer::ConsumerState;
@@ -213,6 +213,12 @@ impl Vm {
                 donor.release_all_allocations();
             }
         }
+
+        // A consumer VM being removed means that its ephemeral memory
+        // might be useful to another consumer. Similarly, if a donor VM is
+        // removed, other donor VMs might be able to satisfy the requests
+        // if previously handled.
+        crate::FULFILL_NOTIFY.notify();
     }
 }
 
@@ -371,6 +377,32 @@ impl DonorAllocation {
     }
 }
 
+struct PendingNotify {
+    pending: Mutex<bool>,
+    cond: Condvar,
+}
+
+impl PendingNotify {
+    pub const fn new() -> Self {
+        Self {
+            pending: Mutex::new(false),
+            cond: Condvar::new(),
+        }
+    }
+
+    pub fn notify(&self) {
+        let mut pending = self.pending.lock().unwrap();
+        *pending = true;
+        self.cond.notify_one();
+    }
+
+    pub fn wait(&self) {
+        let mut pending = self.pending.lock().unwrap();
+        pending = self.cond.wait_while(pending, |pending| !*pending).unwrap();
+        *pending = false;
+    }
+}
+
 type VmList = RwLock<BTreeMap<PathBuf, Arc<Vm>>>;
 
 fn clap_args() -> clap::ArgMatches {
@@ -394,6 +426,15 @@ fn for_each_parallel<T: Sync>(items: &[T], f: impl Fn(&T) + Sync) {
         }
         f(first);
     })
+}
+
+static FULFILL_NOTIFY: PendingNotify = PendingNotify::new();
+
+fn fulfill_notify_thread(vms: Arc<VmList>) {
+    loop {
+        FULFILL_NOTIFY.wait();
+        ConsumerState::fulfill_eph_mem_requests(&vms);
+    }
 }
 
 fn main() {
@@ -435,5 +476,8 @@ fn main() {
                 eprintln!("Error in consumer listener thread: {}", e);
             }
         });
+
+        let vm_list = vms.clone();
+        s.spawn(move || fulfill_notify_thread(vm_list));
     });
 }

@@ -108,6 +108,68 @@ impl ConsumerState {
         Ok(None)
     }
 
+    pub fn fulfill_eph_mem_requests(vms: &VmList) {
+        // Find the consumer VMs that are willing to take more ephemeral memory
+        // and order them in ascending order by the total amount of ephemeral
+        // memory they have been granted.
+        let vms_guard = vms.read().unwrap();
+        // Hold Arc<Vm>s rather than references into the guard, so the VmList
+        // lock can be released before doing any slow work.
+        let mut consumers_to_fulfill: Vec<(u64, Arc<Vm>)> = vms_guard
+            .values()
+            .filter_map(|vm| {
+                let consumer = vm.consumer.as_ref()?;
+                let mut_state = consumer.mut_state.lock().unwrap();
+                let granted_or_in_flight = mut_state.granted_or_in_flight_size();
+                if mut_state.requested > granted_or_in_flight {
+                    Some((granted_or_in_flight, vm.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        drop(vms_guard);
+        consumers_to_fulfill.sort_by_key(|(granted, _vm)| *granted);
+
+        for (_granted, vm) in consumers_to_fulfill {
+            if vm.exited.get().is_some() {
+                log!(
+                    LogLevel::Debug,
+                    "Consumer VM {} has exited, skipping ephemeral memory request fulfillment",
+                    vm.qmp_socket_path.display()
+                );
+                continue;
+            }
+
+            // Unwrap is safe because only VMs with consumer state were collected.
+            let consumer = vm.consumer.as_ref().unwrap();
+            if consumer.vsock_conn.lock().unwrap().is_none() {
+                log!(
+                    LogLevel::Debug,
+                    "Consumer VM {} has no vsock connection, skipping ephemeral memory request fulfillment",
+                    vm.qmp_socket_path.display()
+                );
+                continue;
+            }
+            if let Err(e) = consumer.fulfill_eph_mem_request(vms) {
+                if e.kind() == std::io::ErrorKind::OutOfMemory {
+                    log!(
+                        LogLevel::Debug,
+                        "Consumer VM {} could not be fulfilled due to lack of donor memory",
+                        vm.qmp_socket_path.display()
+                    );
+                    return;
+                } else {
+                    eprintln!(
+                        "Failed to fulfill ephemeral memory request for consumer VM {}: {}",
+                        vm.qmp_socket_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     fn fulfill_eph_mem_request(&self, vms: &VmList) -> std::io::Result<()> {
         let _guard = self.fulfill_mutex.lock().unwrap();
 
@@ -126,9 +188,12 @@ impl ConsumerState {
         // Reserve space in the DCD for the deficit amount.
         let mut rsvd_allocs = self.reserve_memory(deficit);
         if rsvd_allocs.is_empty() {
-            return Err(std::io::Error::other(
-                "Consumer VM has no space available for the requested allocation",
-            ));
+            log!(
+                LogLevel::Debug,
+                "Consumer VM {} has no space available for the requested allocation",
+                self.vm().qmp_socket_path.display()
+            );
+            return Ok(());
         };
 
         // Ask the donors if they can fulfill the request.
@@ -151,7 +216,8 @@ impl ConsumerState {
 
         rsvd_allocs.retain(|a| a.is_committed() && !a.is_release_requested());
         if rsvd_allocs.is_empty() {
-            return Err(std::io::Error::other(
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
                 "No donor VM could satisfy the requested allocation.",
             ));
         }
@@ -263,6 +329,9 @@ impl ConsumerState {
             .unwrap()
             .find_covered_allocations(offset, size);
         Vm::return_eph_memory_from_consumer(&allocs_to_release);
+
+        // The ephemeral memory we released might be useful to another consumer
+        crate::FULFILL_NOTIFY.notify();
     }
 
     /// Returns the `Vm` that owns this consumer state. Since a `ConsumerState`
