@@ -931,6 +931,17 @@ fn consumer_thread(
     // in the future by having the listener thread send a "already connected" message
     // to the consumer, indicating that it should close any other connections andtry again.
     if let Some(consumer_state) = &consumer.consumer {
+        // Without a Vsock connection, the consumer effectively has no
+        // ephemeral memory requests outstanding.
+        log!(
+            LogLevel::Debug,
+            "Consumer VM at '{}' disconnected from ephemerald; releasing allocations",
+            consumer.qmp_socket_path.display()
+        );
+        consumer_state.mut_state.lock().unwrap().requested = 0;
+        consumer_state.release_all_allocations();
+        crate::FULFILL_NOTIFY.notify();
+
         let mut vsock_conn = consumer_state.vsock_conn.lock().unwrap();
         *vsock_conn = None;
     }
