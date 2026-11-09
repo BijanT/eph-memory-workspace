@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <random>
@@ -40,6 +41,24 @@ unsigned long eph_mem_accesses = 0;
 unsigned long miss_accesses = 0;
 // Print the recent total and local throughput every LOG_INTERVAL ms
 const unsigned long LOG_INTERVAL = 5000;
+const int BLOCK_SIZE = 2 * 1024 * 1024; // 2 MB
+// Number of bytes of ephemeral memory granted so far, minus the blocks we have
+// found to be revoked. Added to from libephmem's internal thread by
+// on_eph_mem_grant() and subtracted from by the main thread in
+// handle_revoked_ephmem().
+std::atomic<size_t> eph_mem_granted_bytes{0};
+// Limit on how many ephemeral memory blocks are allocated in one pass of the
+// main loop, so a large grant does not stall a single access.
+const unsigned long MAX_EPH_ALLOCS_PER_ITER = 16;
+
+/*
+ * Called by libephmem whenever ephemeral memory is granted. Runs on
+ * libephmem's internal thread, so only record the grant here and let the main
+ * loop do the allocation.
+ */
+void on_eph_mem_grant(size_t size) {
+	eph_mem_granted_bytes.fetch_add(size);
+}
 
 long compute_block_sum(int *block, size_t block_size) {
 	long sum = 0;
@@ -83,13 +102,23 @@ void mimic_block_read(long sleep_time_us) {
 		;
 }
 
+// Point the ephemeral memory eviction selector at the current slots
+void update_eph_memory_eviction_selector(std::uniform_int_distribution<int> &selector,
+					 size_t num_slots) {
+	if (num_slots > 0)
+		selector = std::uniform_int_distribution<int>(0, num_slots - 1);
+	else
+		selector = std::uniform_int_distribution<int>(0, 0); // No valid indices
+}
+
 void handle_revoked_ephmem(std::vector<struct libephmem_handle*> &eph_memory, std::vector<int> &eph_memory_rmap,
-	                   std::map<int, int> &eph_memory_set, int bad_index, unsigned long &max_eph_memory_blocks,
+	                   std::map<int, int> &eph_memory_set, int bad_index,
 			   std::uniform_int_distribution<int> &eph_memory_eviction_selector) {
 	int revoked_block_id = eph_memory_rmap[bad_index];
 
-	// Free the revoked ephemeral memory
+	// Free the revoked ephemeral memory, and stop counting it as granted.
 	libephmem_free(eph_memory[bad_index]);
+	eph_mem_granted_bytes.fetch_sub(BLOCK_SIZE);
 	// If the revoked slot held a block, that block is gone. Drop its mapping.
 	if (revoked_block_id != -1)
 		eph_memory_set.erase(revoked_block_id);
@@ -97,23 +126,17 @@ void handle_revoked_ephmem(std::vector<struct libephmem_handle*> &eph_memory, st
 	// Remove the revoked slot. Every slot above it shifts down by one.
 	eph_memory.erase(eph_memory.begin() + bad_index);
 	eph_memory_rmap.erase(eph_memory_rmap.begin() + bad_index);
-	max_eph_memory_blocks--;
 
 	// Point the shifted-down slots' blocks at their new indices.
-	for (unsigned long i = bad_index; i < max_eph_memory_blocks; i++) {
+	for (size_t i = bad_index; i < eph_memory.size(); i++) {
 		if (eph_memory_rmap[i] != -1)
 			eph_memory_set[eph_memory_rmap[i]] = i;
 	}
 
-	// Update the ephemeral memory eviction selector
-	if (max_eph_memory_blocks > 0)
-		eph_memory_eviction_selector = std::uniform_int_distribution<int>(0, max_eph_memory_blocks - 1);
-	else
-		eph_memory_eviction_selector = std::uniform_int_distribution<int>(0, 0); // No valid indices
+	update_eph_memory_eviction_selector(eph_memory_eviction_selector, eph_memory.size());
 }
 
 int main(int argc, char *argv[]) {
-	const int BLOCK_SIZE = 2 * 1024 * 1024; // 2 MB
 	std::random_device rd;
 	std::default_random_engine rng(rd());
 	std::uniform_int_distribution<int> block_selector;
@@ -129,9 +152,9 @@ int main(int argc, char *argv[]) {
 	void *ptr;
 	unsigned long total_blocks;
 	unsigned long max_main_memory_blocks;
-	unsigned long max_eph_memory_blocks;
+	// The number of ephemeral memory blocks we would like to have.
+	unsigned long eph_target_blocks;
 	int sleep_time_us;
-	size_t eph_mem_reserve_size;
 
 	if (argc != 5) {
 		std::cerr << "Usage: " << argv[0] << " <total_blocks> "
@@ -142,41 +165,37 @@ int main(int argc, char *argv[]) {
 
 	total_blocks = std::stoul(argv[1]);
 	max_main_memory_blocks = std::stoul(argv[2]);
-	max_eph_memory_blocks = std::stoul(argv[3]);
+	eph_target_blocks = std::stoul(argv[3]);
 	sleep_time_us = std::stoi(argv[4]);
 
 	if (total_blocks == 0 || max_main_memory_blocks == 0) {
 		std::cerr << "Error: total_blocks and max_main_memory_blocks must be > 0" << std::endl;
 		return 1;
 	}
-	if (total_blocks < max_main_memory_blocks + max_eph_memory_blocks) {
-		std::cerr << "Error: total_blocks must be >= max_main_memory_blocks + max_eph_memory_blocks" << std::endl;
+	if (total_blocks < max_main_memory_blocks + eph_target_blocks) {
+		std::cerr << "Error: total_blocks must be >= max_main_memory_blocks + eph_target_blocks" << std::endl;
 		return 1;
 	}
 
-	// Reserve the ephemeral memory and adjust max_eph_memory_blocks accordingly
-	if (max_eph_memory_blocks > 0) {
-		eph_mem_reserve_size = libephmem_reserve(max_eph_memory_blocks * BLOCK_SIZE);
-		if (eph_mem_reserve_size / BLOCK_SIZE < max_eph_memory_blocks) {
-			max_eph_memory_blocks = eph_mem_reserve_size / BLOCK_SIZE;
-			std::cerr << "Warning: Could only reserve " << eph_mem_reserve_size
-				<< " bytes of ephemeral memory, allowing for "
-				<< max_eph_memory_blocks << " blocks of size "
-				<< BLOCK_SIZE << " bytes." << std::endl;
+	// Request the ephemeral memory. It is granted asynchronously, so we start
+	// with no ephemeral memory and add blocks as grants arrive.
+	if (eph_target_blocks > 0) {
+		libephmem_register_callback(on_eph_mem_grant);
+		int ret = libephmem_request(eph_target_blocks * BLOCK_SIZE);
+		if (ret) {
+			std::cerr << "Failed to request ephemeral memory: " << ret << std::endl;
+			return 1;
 		}
 	}
 
 	block_selector = std::uniform_int_distribution<int>(0, total_blocks - 1);
 	main_memory_eviction_selector = std::uniform_int_distribution<int>(0, max_main_memory_blocks - 1);
-	if (max_eph_memory_blocks > 0)
-		eph_memory_eviction_selector = std::uniform_int_distribution<int>(0, max_eph_memory_blocks - 1);
-	else
-		eph_memory_eviction_selector = std::uniform_int_distribution<int>(0, 0); // No valid indices
+	update_eph_memory_eviction_selector(eph_memory_eviction_selector, 0);
 
 	main_memory.reserve(max_main_memory_blocks);
-	eph_memory.reserve(max_eph_memory_blocks);
+	eph_memory.reserve(eph_target_blocks);
 	main_memory_rmap.reserve(max_main_memory_blocks);
-	eph_memory_rmap.reserve(max_eph_memory_blocks);
+	eph_memory_rmap.reserve(eph_target_blocks);
 
 	// Allocate the main memory
 	ptr = mmap(nullptr, max_main_memory_blocks * BLOCK_SIZE,
@@ -190,21 +209,29 @@ int main(int argc, char *argv[]) {
 		main_memory_rmap.push_back(-1);
 	}
 
-	// Allocate the ephemeral memory
-	for (unsigned long i = 0; i < max_eph_memory_blocks; i++) {
-		struct libephmem_handle *handle = libephmem_alloc(BLOCK_SIZE);
-		if (handle == nullptr) {
-			std::cerr << "Failed to allocate ephemeral memory" << std::endl;
-			return 1;
-		}
-		eph_memory.push_back(handle);
-		eph_memory_rmap.push_back(-1);
-	}
-
 	auto print_deadline = std::chrono::steady_clock::now()
 		+ std::chrono::milliseconds(LOG_INTERVAL);
 	// Main Loop
 	while (true) {
+		// Turn any granted ephemeral memory that we do not yet have a block for
+		// into blocks. Granted memory that replaces revoked memory shows up here
+		// too. This is done before starting the access timer so it does not
+		// count towards access latency.
+		unsigned long granted_blocks = eph_mem_granted_bytes.load() / BLOCK_SIZE;
+		unsigned long new_blocks = 0;
+		while (eph_memory.size() < granted_blocks &&
+		       eph_memory.size() < eph_target_blocks &&
+		       new_blocks < MAX_EPH_ALLOCS_PER_ITER) {
+			struct libephmem_handle *handle = libephmem_alloc(BLOCK_SIZE);
+			if (handle == nullptr)
+				break; // Try again on a later pass
+			eph_memory.push_back(handle);
+			eph_memory_rmap.push_back(-1);
+			new_blocks++;
+		}
+		if (new_blocks > 0)
+			update_eph_memory_eviction_selector(eph_memory_eviction_selector, eph_memory.size());
+
 		auto start_time = std::chrono::steady_clock::now();
 		int block_id = block_selector(rng);
 		auto eph_it = eph_memory_set.find(block_id);
@@ -236,7 +263,7 @@ int main(int argc, char *argv[]) {
 			if (attempt_result == 1) {
 				// Ephemeral memory was revoked, handle it
 				handle_revoked_ephmem(eph_memory, eph_memory_rmap, eph_memory_set,
-					eph_it->second, max_eph_memory_blocks, eph_memory_eviction_selector);
+					eph_it->second, eph_memory_eviction_selector);
 			} else if (attempt_result == -1) {
 				std::cerr << "Invalid arguments for libephmem_attempt" << std::endl;
 				return 1;
@@ -262,7 +289,7 @@ int main(int argc, char *argv[]) {
 			}
 
 			// Find an index in ephemeral memory to evict to
-			if (eph_memory_set.size() >= max_eph_memory_blocks && max_eph_memory_blocks > 0) {
+			if (eph_memory_set.size() >= eph_memory.size() && eph_memory.size() > 0) {
 				eph_mem_index = eph_memory_eviction_selector(rng);
 				int eph_evict_block_id = eph_memory_rmap[eph_mem_index];
 
@@ -275,7 +302,7 @@ int main(int argc, char *argv[]) {
 				// Remove the evicted block from ephemeral memory set
 				eph_memory_set.erase(eph_evict_block_id);
 				eph_memory_rmap[eph_mem_index] = -1;
-			} else if (max_eph_memory_blocks > 0) {
+			} else if (eph_memory.size() > 0) {
 				// Space in ephemeral memory, use the next available index
 				eph_mem_index = eph_memory_set.size();
 			}
@@ -291,7 +318,7 @@ int main(int argc, char *argv[]) {
 				if (attempt_result == 1) {
 					// Ephemeral memory was revoked, handle it
 					handle_revoked_ephmem(eph_memory, eph_memory_rmap, eph_memory_set,
-						eph_mem_index, max_eph_memory_blocks, eph_memory_eviction_selector);
+						eph_mem_index, eph_memory_eviction_selector);
 				} else if (attempt_result == -1) {
 					std::cerr << "Invalid arguments for libephmem_put" << std::endl;
 					return 1;
@@ -342,6 +369,9 @@ time_keeping:
 				<< std::endl;
 			std::cout << "Ephemeral memory accesses: " << eph_mem_accesses
 				<< ", Ephemeral memory hit latency (us): " << (eph_mem_accesses > 0 ? static_cast<double>(eph_mem_hit_time) / eph_mem_accesses : 0)
+				<< std::endl;
+			std::cout << "Ephemeral memory blocks: " << eph_memory.size() << "/" << eph_target_blocks
+				<< ", Ephemeral bytes granted (net of revoked blocks): " << eph_mem_granted_bytes.load()
 				<< std::endl;
 			std::cout << "Miss accesses: " << miss_accesses
 				<< ", Miss latency (us): " << (miss_accesses > 0 ? static_cast<double>(miss_time) / miss_accesses : 0)

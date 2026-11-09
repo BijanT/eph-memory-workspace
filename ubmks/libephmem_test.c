@@ -1,5 +1,9 @@
+#include <stdatomic.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <libephmem.h>
+
+static atomic_size_t eph_mem_granted = 0;
 
 void fill_eph_mem(void *ptr, size_t size, void *) {
     int *int_ptr = (int *)ptr;
@@ -21,19 +25,29 @@ void eph_sum(void *ptr, size_t size, void *arg) {
     }
 }
 
+void eph_mem_granted_callback(size_t size) {
+    atomic_fetch_add(&eph_mem_granted, size);
+}
+
 int main(int argc, char **argv) {
-    size_t reserve_size = LIBEPHMEM_RESERVATION_GRANULARITY;
+    size_t request_size = LIBEPHMEM_RESERVATION_GRANULARITY;
     int alloc_size = 256 * 1024 * 1024; // 256 MB
     struct libephmem_handle *handle;
     int ret;
     long sum;
 
-    size_t actual_reserve_size = libephmem_reserve(reserve_size);
-    if (actual_reserve_size == 0) {
-        fprintf(stderr, "Failed to reserve ephemeral memory\n");
+    libephmem_register_callback(eph_mem_granted_callback);
+
+    if (libephmem_request(request_size)) {
+        fprintf(stderr, "Failed to request ephemeral memory\n");
         return 1;
     }
-    printf("Reserved %zu bytes of ephemeral memory\n", actual_reserve_size);
+
+    while (atomic_load(&eph_mem_granted) == 0) {
+        sleep(1);
+    }
+
+    printf("Reserved %zu bytes of ephemeral memory\n", atomic_load(&eph_mem_granted));
 
     handle = libephmem_alloc(alloc_size);
     if (handle == NULL) {
@@ -41,7 +55,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("Allocated %ld bytes of ephemeral memory\n", libephmem_size(handle));
+    printf("Allocated %zu bytes of ephemeral memory\n", libephmem_size(handle));
     printf("Writing to ephemeral memory...\n");
 
     ret = libephmem_attempt(handle, fill_eph_mem, NULL);
