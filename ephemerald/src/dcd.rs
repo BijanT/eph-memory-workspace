@@ -173,6 +173,24 @@ impl DaxDevice {
     }
 }
 
+impl Drop for DaxDevice {
+    fn drop(&mut self) {
+        // This tells EphMFS that the device has been revoked and should be
+        // removed when it is no longer in use.
+        if let Err(e) = fs::write("/sys/fs/ephmfs/revoke", &self.dev_path) {
+            eprintln!("Failed to revoke device {}: {}", self.dev_path, e);
+        }
+
+        // TODO: We can't just call "daxctl destroy-device" now because EphMFS
+        // releases the device asynchronously. A better solution would be to pass
+        // the device name to a separate thread that polls /sys/fs/ephmfs/devs.
+        // When that thread sees the device removed, then it can destroy the
+        // device.
+        // However, for our testing purposes, we don't need to destroy the
+        // device, so we will just punt on this for now.
+    }
+}
+
 /// Returns true if an EphMFS filesystem is mounted on the system
 fn ephmfs_mounted(mountpoint: &str) -> std::io::Result<bool> {
     // If the mountpoint doesn't exist, nothing can be mounted there.
