@@ -281,7 +281,7 @@ fn install_guest_dependencies(ushell: &SshShell) -> Result<(), ScailError> {
 
     // Build the DCD fork of ndctl
     let ndctl_repo = GitRepo::HttpsPublic {
-        repo: "github.com/anisa-su993/anisa-ndctl.git",
+        repo: "github.com/BijanT/dcd_ndctl.git",
     };
     clone_git_repo(
         ushell,
