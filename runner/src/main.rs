@@ -15,6 +15,11 @@ const GUEST_KERNEL_DIR: &str = "guest-kernel";
 const HOST_KERNEL_DIR: &str = "host-kernel";
 const QEMU_DIR: &str = "qemu";
 const QMP_SOCK_DIR: &str = "/tmp/ephmem";
+const LOCAL_RESULTS_DIR: &str = "local_results";
+const WORKLOADS_DIR: &str = "workloads";
+const PERF_RECORD_FILE: &str = "/tmp/perf_record.out";
+const STOP_PF_TRACE_FILE: &str = "/tmp/stop_pf_trace";
+const STOP_KVM_PF_TRACE_FILE: &str = "/tmp/stop_kvm_pf_trace";
 
 const VM_USERNAME: &str = "ubuntu";
 const LIBVIRT_URI: &str = "qemu:///system";
