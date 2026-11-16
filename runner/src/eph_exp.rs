@@ -222,7 +222,7 @@ where
     // Reserve enough HugeTLB pages for the VM
     host_shell.run(cmd!(
         "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-        crate::VM_SIZE_GB * 512
+        crate::VM_MEMORY_POOL_SIZE_GB * 512
     ))?;
 
     // Make sure the directory for the QMP sockets exists

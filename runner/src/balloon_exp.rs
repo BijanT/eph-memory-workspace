@@ -134,7 +134,7 @@ where
     // Reserve enough HugeTLB pages for the VM
     host_shell.run(cmd!(
         "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-        crate::VM_SIZE_GB * 512
+        crate::VM_MEMORY_POOL_SIZE_GB * 512
     ))?;
 
     let guest_shell = crate::start_and_connect_to_vm(
@@ -194,7 +194,7 @@ where
             ))?;
         }
         ShrinkStrategy::HotUnplug => {
-            let num_unplugs = (crate::VM_SIZE_GB - cfg.shrink_size) / 2;
+            let num_unplugs = (crate::VM_MEMORY_POOL_SIZE_GB - cfg.shrink_size) / 2;
 
             if num_unplugs > 8 {
                 return Err(ScailError::new(ScailErrorType::InvalidValueError {
@@ -222,7 +222,7 @@ where
     loop {
         const MAX_WAIT_MS: usize = 5000;
         const MIN_WAIT_MS: usize = 500;
-        const ORIG_SIZE_KB: usize = crate::VM_SIZE_GB * 1024 * 1024;
+        const ORIG_SIZE_KB: usize = crate::VM_MEMORY_POOL_SIZE_GB * 1024 * 1024;
         let guest_size_kb = host_shell
             .run(cmd!(
                 "virsh -c {} dommemstat {} | grep actual | awk '{{print $2}}'",

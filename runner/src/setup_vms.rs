@@ -389,12 +389,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     // Directory to store the complete VM domain XML files
     let domains_dir = dir!(&user_home, crate::DOMAINS_DIR);
     // List of VM's to setup
-    let vms_list = [
-        ("balloon_vm", 48),
-        ("hotplug_vm", 48),
-        ("donor_vm", 16),
-        ("consumer_vm", 16),
-    ];
+    let vms_list = ["balloon_vm", "hotplug_vm", "donor_vm", "consumer_vm"];
     // Strings to replace in the domain XML templates
     let template_replace_from = [
         "\\[GUEST_KERNEL\\]",
@@ -423,7 +418,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
     crate::create_qmp_dir(ushell)?;
 
     // Do setup for each VM
-    for (vm_name, _size_gb) in vms_list.iter() {
+    for vm_name in vms_list.iter() {
         // The domain template file for this VM
         let domain_template_path = dir!(&vm_info_dir, format!("{}.xml", vm_name));
         // The final domain XML file for this VM
@@ -460,11 +455,11 @@ fn setup_guest_vms<A: ToSocketAddrs>(
 
     // Install dependencies and workloads on the disk image that is shared by
     // all VMs
-    let (vm_name, vm_size_gb) = vms_list[0];
+    let vm_name = vms_list[0];
     // Reserve enough HugeTLB pages for the VM
     ushell.run(cmd!(
         "echo {} | sudo tee /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
-        vm_size_gb * 512
+        crate::VM_MEMORY_POOL_SIZE_GB * 512
     ))?;
     let vm_shell =
         crate::start_and_connect_to_vm(ushell, vm_name, &host, crate::START_NAT_PORT, None)?;

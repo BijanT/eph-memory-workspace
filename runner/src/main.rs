@@ -20,7 +20,9 @@ const VM_USERNAME: &str = "ubuntu";
 const LIBVIRT_URI: &str = "qemu:///system";
 const START_NAT_PORT: u16 = 2222;
 
-const VM_SIZE_GB: usize = 48;
+// The max amount of memory to be used across all VMs
+const VM_MEMORY_POOL_SIZE_GB: usize = 48;
+// The number of vCPUs used by an individual VM.
 const NUM_VCPUS: usize = 4;
 
 fn run() -> Result<(), ScailError> {
