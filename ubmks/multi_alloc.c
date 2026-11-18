@@ -1,10 +1,11 @@
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
-#include <sys/time.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -67,7 +68,7 @@ static void kill_children(pid_t *pids, int num) {
 }
 
 int main(int argc, char *argv[]) {
-    struct timeval stop, start;
+    struct timespec stop, start;
     size_t size;
     size_t proc_size;
     pid_t *pids;
@@ -80,7 +81,7 @@ int main(int argc, char *argv[]) {
     int ret = 0;
     char status;
     ssize_t n;
-    time_t alloc_time_usec;
+    int64_t alloc_time_nsec;
     time_t alloc_time_sec;
     time_t alloc_ms_remainder;
 
@@ -131,7 +132,7 @@ int main(int argc, char *argv[]) {
     close(done_pipe[1]);
 
     // Release all of the children at once
-    gettimeofday(&start, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &start);
     close(go_pipe[1]);
 
     // Each child writes one status byte. Stop the clock once every child has
@@ -142,7 +143,7 @@ int main(int argc, char *argv[]) {
             failed++;
         }
     }
-    gettimeofday(&stop, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &stop);
     close(done_pipe[0]);
 
     if (n < 0) {
@@ -155,10 +156,10 @@ int main(int argc, char *argv[]) {
     }
 
     if (ret == 0) {
-        alloc_time_usec = (stop.tv_sec - start.tv_sec) * 1000000 +
-            (stop.tv_usec - start.tv_usec);
-        alloc_time_sec = alloc_time_usec / 1000000;
-        alloc_ms_remainder = (alloc_time_usec % 1000000) / 1000;
+        alloc_time_nsec = (int64_t)(stop.tv_sec - start.tv_sec) * 1000000000 +
+            (stop.tv_nsec - start.tv_nsec);
+        alloc_time_sec = alloc_time_nsec / 1000000000;
+        alloc_ms_remainder = (alloc_time_nsec % 1000000000) / 1000000;
 
         printf("Allocated %zu bytes of memory. In %ld.%03ld seconds\n", size,
             alloc_time_sec, alloc_ms_remainder);

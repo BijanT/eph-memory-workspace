@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
-#include <sys/time.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,10 +15,10 @@
 #define EPHMFS_IOCTL_ATTEMPT_OFF _IO(EPHMFS_IOCTL_MAGIC, 1)
 
 int main(int argc, char *argv[]) {
-    struct timeval stop, start;
+    struct timespec stop, start;
     size_t size;
     char *mfs_dir;
-    time_t alloc_time_usec;
+    int64_t alloc_time_nsec;
     time_t alloc_time_sec;
     time_t alloc_ms_remainder;
     int fd;
@@ -51,7 +50,7 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    gettimeofday(&start, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &start);
     if (fallocate(fd, 0, 0, size)) {
         perror("fallocate failed");
         return -1;
@@ -71,12 +70,12 @@ int main(int argc, char *argv[]) {
 
     *ptr = 0; // Touch the page to ensure it's allocated
 
-    gettimeofday(&stop, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &stop);
 
-    alloc_time_usec = (stop.tv_sec - start.tv_sec) * 1000000 +
-        (stop.tv_usec - start.tv_usec);
-    alloc_time_sec = alloc_time_usec / 1000000;
-    alloc_ms_remainder = (alloc_time_usec % 1000000) / 1000;
+    alloc_time_nsec = (int64_t)(stop.tv_sec - start.tv_sec) * 1000000000 +
+        (stop.tv_nsec - start.tv_nsec);
+    alloc_time_sec = alloc_time_nsec / 1000000000;
+    alloc_ms_remainder = (alloc_time_nsec % 1000000000) / 1000000;
 
     // Keep the memory allocated for a while to allow inspection
     printf("Allocated %zu bytes of memory. In %ld.%03ld seconds %p. Waiting\n", size,
