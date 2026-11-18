@@ -21,6 +21,10 @@ enum Workload {
         size_gb: u64,
         procs: u64,
     },
+    LibEphMemTest {
+        size_gb: u64,
+        wait_time: u64,
+    },
     Spark {
         scale_factor: u64,
         executor_mem_gb: u64,
@@ -65,6 +69,7 @@ struct GuestPaths {
     spark_file: String,
     spark_time_file: String,
     duckdb_file: String,
+    libephmem_test_file: String,
     pf_trace_file: String,
     bpf_stats_file: String,
     numactl_file: String,
@@ -90,6 +95,7 @@ impl GuestPaths {
             spark_file: file("spark"),
             spark_time_file: file("spark_time"),
             duckdb_file: file("duckdb"),
+            libephmem_test_file: file("libephmem_test"),
             pf_trace_file: file("pf_trace"),
             bpf_stats_file: file("bpf_stats"),
             numactl_file: file("numactl"),
@@ -117,6 +123,7 @@ struct VmInfo {
 const WORKLOAD_FORMATS: &str = "  alloc_data:<size_gb>\n  \
     multi_alloc:<size_gb>:<procs>\n  \
     spark:<scale_factor>:<executor_mem_gb>\n  \
+    libephmem_test:<size_gb>:<wait_time>\n  \
     duckdb";
 fn parse_workloads(s: &str) -> Result<Workload, String> {
     let mut split = s.split(':');
@@ -161,6 +168,12 @@ fn parse_workloads(s: &str) -> Result<Workload, String> {
                 scale_factor,
                 executor_mem_gb,
             })
+        }
+        "libephmem_test" => {
+            expect(2)?;
+            let size_gb = to_num(0, "size_gb")?;
+            let wait_time = to_num(1, "wait_time")?;
+            Ok(Workload::LibEphMemTest { size_gb, wait_time })
         }
         "duckdb" => {
             expect(0)?;
@@ -267,6 +280,13 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
             msg: "spark cannot be the workload for both the donor and consumer VMs: \
                   they share the workloads directory, so their TPC-DS data would conflict"
                 .to_string(),
+        }));
+    }
+
+    // libephmem_test can only be run in the consumer
+    if matches!(&donor_workload, Some(Workload::LibEphMemTest { .. })) {
+        return Err(ScailError::new(ScailErrorType::InvalidValueError {
+            msg: "libephmem_test can only be run in the consumer VM".to_string(),
         }));
     }
 
@@ -540,6 +560,7 @@ where
         // TODO: Find the actual Spark process name
         // It's probably something like "java" or something
         Workload::Spark { .. } => "TODO",
+        Workload::LibEphMemTest { .. } => "libephmem_test",
         Workload::DuckDB => "benchmark_runne",
     };
     if proc_name.len() > 15 {
@@ -660,6 +681,14 @@ fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailErr
             )
             .use_bash()
         }
+        Workload::LibEphMemTest { size_gb, wait_time } => cmd!(
+            "{} ./ubmks/libephmem_test {} {} 2>&1 | sudo tee {}",
+            vm_info.cmd_prefix,
+            size_gb,
+            wait_time,
+            &paths.libephmem_test_file
+        )
+        .cwd(&paths.wkspc),
         Workload::DuckDB => {
             let duckdb_bin = dir!(
                 &paths.wkspc,
