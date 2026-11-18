@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
     alloc_ms_remainder = (alloc_time_usec % 1000000) / 1000;
 
     // Keep the memory allocated for a while to allow inspection
-    printf("Allocated %zu bytes of memory. In %ld.%ld seconds\n", size,
+    printf("Allocated %zu bytes of memory. In %ld.%03ld seconds\n", size,
         alloc_time_sec, alloc_ms_remainder);
     fflush(stdout);
     if (wait) {
