@@ -1,5 +1,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <libephmem.h>
 
@@ -35,6 +36,27 @@ int main(int argc, char **argv) {
     struct libephmem_handle *handle;
     int ret;
     long sum;
+    unsigned int wait_time = 0;
+
+    if (argc > 3) {
+        fprintf(stderr, "Usage: %s [request size in GB] [wait time (s)]\n", argv[0]);
+        return 1;
+    }
+
+    if (argc >= 2) {
+        request_size = (size_t)atoll(argv[1]) * 1024 * 1024 * 1024;
+        if (request_size == 0) {
+            fprintf(stderr, "Invalid request size: %s\n", argv[1]);
+            return 1;
+        }
+    }
+    if (argc == 3) {
+        wait_time = atoi(argv[2]);
+        if (wait_time <= 0) {
+            fprintf(stderr, "Invalid wait time: %s\n", argv[2]);
+            return 1;
+        }
+    }
 
     libephmem_register_callback(eph_mem_granted_callback);
 
@@ -43,8 +65,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    while (atomic_load(&eph_mem_granted) == 0) {
-        sleep(1);
+    // One second should be plenty of time to be given ephemeral memory.
+    // If we don't get it by then, something is wrong.
+    sleep(1);
+    if (atomic_load(&eph_mem_granted) < request_size) {
+        fprintf(stderr, "Failed to reserve ephemeral memory\n");
+        return 1;
     }
 
     printf("Reserved %zu bytes of ephemeral memory\n", atomic_load(&eph_mem_granted));
@@ -64,8 +90,15 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("Waiting for user input to read from ephemeral memory...\n");
-    getchar();
+    if (wait_time == 0) {
+        printf("Waiting for user input to read from ephemeral memory...\n");
+        getchar();
+    } else {
+        printf("Waiting for %d seconds before reading from ephemeral memory...\n", wait_time);
+        while (wait_time > 0) {
+            wait_time = sleep(wait_time);
+        }
+    }
 
     printf("Reading from ephemeral memory...\n");
 
