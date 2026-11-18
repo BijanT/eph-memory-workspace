@@ -70,6 +70,7 @@ struct GuestPaths {
     spark_time_file: String,
     duckdb_file: String,
     libephmem_test_file: String,
+    ephemerald_file: String,
     pf_trace_file: String,
     bpf_stats_file: String,
     numactl_file: String,
@@ -96,6 +97,7 @@ impl GuestPaths {
             spark_time_file: file("spark_time"),
             duckdb_file: file("duckdb"),
             libephmem_test_file: file("libephmem_test"),
+            ephemerald_file: file("ephemerald"),
             pf_trace_file: file("pf_trace"),
             bpf_stats_file: file("bpf_stats"),
             numactl_file: file("numactl"),
@@ -115,6 +117,8 @@ struct VmInfo {
     cmd_prefix: String,
     vm_log_path: String,
     paths: GuestPaths,
+    /// Handle for ephemerald. `Some` iff this is the consumer VM.
+    ephemerald: Option<spurs::SshSpawnHandle>,
 }
 
 // Clap does not seem to support multiple different subcommands, so to support
@@ -313,9 +317,6 @@ fn run_inner<A>(login: &Login<A>, cfg: &Config) -> Result<(), ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    const DONOR_DOMAIN: &str = "donor_vm";
-    const CONSUMER_DOMAIN: &str = "consumer_vm";
-
     // Reboot the machine to start from a fresh slate
     let host_shell = crate::reboot_and_connect(login)?;
     let host_home = get_user_home_dir(&host_shell)?;
@@ -323,6 +324,7 @@ where
     let host_results_dir = dir!(&host_home, crate::RESULTS_DIR);
 
     let (_output_file, params_file, _time_file, _sim_file) = cfg.gen_standard_names();
+    let orchestrator_file = dir!(&host_results_dir, cfg.gen_file_name("orchestrator"));
     let host_flamegraph_file_stem = dir!(&host_results_dir, cfg.gen_file_name("host_flamegraph"));
     // Host pf_trace and kvm_pf_trace trace one process each, so one instance
     // runs per VM, and their output files are named by the VM's domain.
@@ -336,6 +338,9 @@ where
     let host_perf_stat_file = dir!(&host_results_dir, cfg.gen_file_name("host_perf_stat"));
 
     host_shell.run(cmd!("mkdir -p {}", host_results_dir))?;
+    // Take back ownership of the results directory in case a previous
+    // run changed it.
+    host_shell.run(cmd!("sudo chown -R $USER {}", &host_results_dir))?;
     host_shell.run(cmd!(
         "echo {} | sudo tee {}",
         escape_for_bash(&serde_json::to_string(&cfg)?),
@@ -356,24 +361,43 @@ where
     // Make sure the directory for the QMP sockets exists
     crate::create_qmp_dir(&host_shell)?;
 
+    // Start the Ephemeral Memory Orchestrator if the consumer is being run
+    // Use file redirection instead of tee to not pollute the log
+    // output too much.
+    let orch_handle = if cfg.consumer_workload.is_some() {
+        let handle = host_shell.spawn(
+            cmd!(
+                "./target/debug/eph_orchestrator --log-level=debug > {} 2>&1",
+                orchestrator_file
+            )
+            .cwd(&host_wkspc)
+            .allow_error(),
+        )?;
+        // Fail fast if the orchestrator did not start or exited immediately
+        // Otherwise, the failure only shows up later as ephemerald failing to
+        // connect.
+        host_shell.run(cmd!("sleep 1; pgrep -x eph_orchestrato"))?;
+        Some(handle)
+    } else {
+        None
+    };
+
     // Start a VM for each requested workload. Each started VM gets the next
     // NAT port.
     let mut nat_port = crate::START_NAT_PORT;
     let mut vms = Vec::new();
-    for (domain, workload) in [
-        (DONOR_DOMAIN, &cfg.donor_workload),
-        (CONSUMER_DOMAIN, &cfg.consumer_workload),
-    ] {
+    for (consumer, workload) in [(false, &cfg.donor_workload), (true, &cfg.consumer_workload)] {
         if let Some(workload) = workload {
-            vms.push(start_vm(
+            let vm = start_vm(
                 &host_shell,
                 cfg,
-                domain,
+                consumer,
                 &login.host,
                 nat_port,
                 &mut tctx,
                 workload,
-            )?);
+            )?;
+            vms.push(vm);
             nat_port += 1;
         }
     }
@@ -461,7 +485,7 @@ where
     for bgctx in bgctxs {
         bgctx.notify_and_join_all()?;
     }
-    for vm_info in &vms {
+    for vm_info in &mut vms {
         cleanup_vm(cfg, &host_shell, &host_results_dir, vm_info)?;
     }
 
@@ -501,6 +525,16 @@ where
         )?;
     }
 
+    if let Some(handle) = orch_handle {
+        // Process names are truncated to 15 characters, so match on the
+        // truncated name. If nothing matches, the orchestrator exited early,
+        // so warn instead of failing the run.
+        host_shell.run(cmd!(
+            "pkill -INT -x eph_orchestrato || echo 'WARNING: eph_orchestrator exited early'"
+        ))?;
+        handle.join().1?;
+    }
+
     println!("RESULTS: {}", dir!(host_results_dir, cfg.gen_file_name("")));
     Ok(())
 }
@@ -508,7 +542,7 @@ where
 fn start_vm<A>(
     host_shell: &SshShell,
     cfg: &Config,
-    domain: &str,
+    consumer: bool,
     host: &A,
     host_port: u16,
     tctx: &mut TasksetCtx,
@@ -517,6 +551,14 @@ fn start_vm<A>(
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
+    const DONOR_DOMAIN: &str = "donor_vm";
+    const CONSUMER_DOMAIN: &str = "consumer_vm";
+
+    let domain = if consumer {
+        CONSUMER_DOMAIN
+    } else {
+        DONOR_DOMAIN
+    };
     let vm_log_path = format!("/var/log/libvirt/qemu/{}.log", domain);
 
     // libvirt appends to the domain's log across boots. Truncate it so the
@@ -591,6 +633,28 @@ where
         ));
     }
 
+    // Start ephemerald in the consumer. Use file redirection instead of tee
+    // to not pollute the log output.
+    let ephemerald = if consumer {
+        let handle = guest_shell.spawn(
+            cmd!(
+                "sudo ./target/debug/ephemerald > {} 2>&1",
+                &paths.ephemerald_file
+            )
+            .cwd(&paths.wkspc)
+            .allow_error(),
+        )?;
+        // Wait for ephemerald to create its socket so the workload doesn't
+        // try to connect before it is ready. This also fails the run (after
+        // the timeout) if ephemerald exits during startup.
+        guest_shell.run(cmd!(
+            "timeout 30 sh -c 'until [ -S /run/ephemerald.sock ]; do sleep 0.1; done'"
+        ))?;
+        Some(handle)
+    } else {
+        None
+    };
+
     Ok(VmInfo {
         shell: guest_shell,
         domain: domain.to_string(),
@@ -600,6 +664,7 @@ where
         cmd_prefix,
         vm_log_path,
         paths,
+        ephemerald,
     })
 }
 
@@ -747,8 +812,18 @@ fn cleanup_vm(
     cfg: &Config,
     host_shell: &SshShell,
     host_results_dir: &str,
-    vm_info: &VmInfo,
+    vm_info: &mut VmInfo,
 ) -> Result<(), ScailError> {
+    // Consumer-specific cleanup: stop ephemerald so its log is complete
+    // before the results are copied. If nothing matches, ephemerald exited
+    // early, so warn instead of failing, which would skip collecting results.
+    if let Some(handle) = vm_info.ephemerald.take() {
+        vm_info.shell.run(cmd!(
+            "sudo pkill -INT -x ephemerald || echo 'WARNING: ephemerald exited early'"
+        ))?;
+        handle.join().1?;
+    }
+
     let paths = &vm_info.paths;
     let host_vm_log_file = dir!(
         host_results_dir,
