@@ -17,6 +17,10 @@ use spurs::{Execute, SshShell, cmd};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Workload {
     AllocData(u64),
+    MultiAlloc {
+        size_gb: u64,
+        procs: u64,
+    },
     Spark {
         scale_factor: u64,
         executor_mem_gb: u64,
@@ -57,6 +61,7 @@ struct GuestPaths {
     // Result files. These include the VM's domain so that results from
     // different VMs in the same experiment do not collide.
     alloc_data_file: String,
+    multi_alloc_file: String,
     spark_file: String,
     spark_time_file: String,
     duckdb_file: String,
@@ -81,6 +86,7 @@ impl GuestPaths {
             workloads_dir: dir!(guest_home, crate::WORKLOADS_DIR),
             shared_results_dir: dir!(guest_home, crate::RESULTS_DIR),
             alloc_data_file: file("alloc_data"),
+            multi_alloc_file: file("multi_alloc"),
             spark_file: file("spark"),
             spark_time_file: file("spark_time"),
             duckdb_file: file("duckdb"),
@@ -109,6 +115,7 @@ struct VmInfo {
 // specifying different workloads for the donor and consumer, we use a manual
 // parser for the workloads instead of clap subcommands.
 const WORKLOAD_FORMATS: &str = "  alloc_data:<size_gb>\n  \
+    multi_alloc:<size_gb>:<procs>\n  \
     spark:<scale_factor>:<executor_mem_gb>\n  \
     duckdb";
 fn parse_workloads(s: &str) -> Result<Workload, String> {
@@ -139,6 +146,12 @@ fn parse_workloads(s: &str) -> Result<Workload, String> {
             expect(1)?;
             let size_gb = to_num(0, "size_gb")?;
             Ok(Workload::AllocData(size_gb))
+        }
+        "multi_alloc" => {
+            expect(2)?;
+            let size_gb = to_num(0, "size_gb")?;
+            let procs = to_num(1, "procs")?;
+            Ok(Workload::MultiAlloc { size_gb, procs })
         }
         "spark" => {
             expect(2)?;
@@ -523,6 +536,7 @@ where
 
     let proc_name = match workload {
         Workload::AllocData(_) => "alloc_data",
+        Workload::MultiAlloc { .. } => "multi_alloc",
         // TODO: Find the actual Spark process name
         // It's probably something like "java" or something
         Workload::Spark { .. } => "TODO",
@@ -613,40 +627,38 @@ fn start_vm_bg_tasks<'s>(
 fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailError> {
     let paths = &vm_info.paths;
 
-    match vm_info.workload {
-        Workload::AllocData(size_gb) => vm_info
-            .shell
-            .spawn(
-                cmd!(
-                    "{} ./ubmks/alloc_data {} halt | sudo tee {}",
-                    vm_info.cmd_prefix,
-                    size_gb,
-                    &paths.alloc_data_file
-                )
-                .cwd(&paths.wkspc),
-            )
-            .map_err(|e| e.into()),
+    let cmd = match vm_info.workload {
+        Workload::AllocData(size_gb) => cmd!(
+            "{} ./ubmks/alloc_data {} halt | sudo tee {}",
+            vm_info.cmd_prefix,
+            size_gb,
+            &paths.alloc_data_file
+        )
+        .cwd(&paths.wkspc),
+        Workload::MultiAlloc { size_gb, procs } => cmd!(
+            "{} ./ubmks/multi_alloc {} {} 2>&1 | sudo tee {}",
+            vm_info.cmd_prefix,
+            size_gb,
+            procs,
+            &paths.multi_alloc_file
+        )
+        .cwd(&paths.wkspc),
         Workload::Spark {
             executor_mem_gb, ..
         } => {
             let query_file = dir!(&paths.workloads_dir, "tpcds", "queries", "all.sql");
             let spark_sql_bin = dir!(&paths.workloads_dir, "spark", "bin", "spark-sql");
 
-            vm_info
-                .shell
-                .spawn(
-                    cmd!(
-                        "TIMEFORMAT=%3R; {{ time {} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {} ; }} 2> {}",
-                        vm_info.cmd_prefix,
-                        spark_sql_bin,
-                        executor_mem_gb,
-                        query_file,
-                        &paths.spark_file,
-                        &paths.spark_time_file
-                    )
-                    .use_bash(),
-                )
-                .map_err(|e| e.into())
+            cmd!(
+                "TIMEFORMAT=%3R; {{ time {} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {} ; }} 2> {}",
+                vm_info.cmd_prefix,
+                spark_sql_bin,
+                executor_mem_gb,
+                query_file,
+                &paths.spark_file,
+                &paths.spark_time_file
+            )
+            .use_bash()
         }
         Workload::DuckDB => {
             let duckdb_bin = dir!(
@@ -659,18 +671,17 @@ fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailErr
                 "benchmark_runner"
             );
             let queries = "benchmark/large/tpch-sf100/.*";
-            vm_info
-                .shell
-                .spawn(cmd!(
-                    "{} {} --out={} --disable-timeout {}",
-                    vm_info.cmd_prefix,
-                    duckdb_bin,
-                    &paths.duckdb_file,
-                    queries
-                ))
-                .map_err(|e| e.into())
+            cmd!(
+                "{} {} --out={} --disable-timeout {}",
+                vm_info.cmd_prefix,
+                duckdb_bin,
+                &paths.duckdb_file,
+                queries
+            )
         }
-    }
+    };
+
+    vm_info.shell.spawn(cmd).map_err(|e| e.into())
 }
 
 fn generate_flamegraph(
