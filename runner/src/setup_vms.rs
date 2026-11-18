@@ -412,7 +412,7 @@ fn setup_guest_vms<A: ToSocketAddrs>(
 
     // Create the VM images
     let cloud_init_img_path = create_cloud_init_img(ushell, &user_home, &vm_info_dir, &imgs_dir)?;
-    let ubuntu_img_path = create_ubuntu_img(ushell, &imgs_dir)?;
+    let ubuntu_img_path = create_ubuntu_img(ushell, &guest_kernel_dir, &imgs_dir)?;
 
     // The donor and consumer VMs need this directory to store their QMP sockets
     crate::create_qmp_dir(ushell)?;
@@ -545,7 +545,11 @@ fn gen_sed_replace_cmd(replace_from: &[&str], replace_to: &[&str]) -> String {
     sed_cmd
 }
 
-fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailError> {
+fn create_ubuntu_img(
+    ushell: &SshShell,
+    guest_kernel_dir: &str,
+    imgs_dir: &str,
+) -> Result<String, ScailError> {
     let user_home = get_user_home_dir(ushell)?;
     let base_img_path = dir!(imgs_dir, "ubuntu_base.qcow2");
     let img_path = dir!(imgs_dir, "ubuntu_vm.qcow2");
@@ -569,7 +573,8 @@ fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailE
     ushell.run(cmd!("qemu-img resize {} +64G", img_path))?;
 
     // Copy the kernel modules to /lib/modules on the guest
-    let kbuild_dir = dir!(&user_home, crate::GUEST_KERNEL_DIR, "kbuild");
+    let kbuild_dir = dir!(guest_kernel_dir, "kbuild");
+    let ephmfs_dir = dir!(guest_kernel_dir, "EphMFS");
     ushell.run(cmd!("mkdir -p {}", guest_img_mount_dir))?;
     ushell.run(cmd!(
         "sudo guestmount -a {} -i {}",
@@ -583,6 +588,18 @@ fn create_ubuntu_img(ushell: &SshShell, imgs_dir: &str) -> Result<String, ScailE
         )
         .cwd(&kbuild_dir),
     )?;
+    ushell.run(
+        cmd!(
+            "sudo make M={} modules_install INSTALL_MOD_PATH={}",
+            ephmfs_dir,
+            guest_img_mount_dir
+        )
+        .cwd(&kbuild_dir),
+    )?;
+    ushell.run(cmd!(
+        "echo ephmfs | sudo tee {}/etc/modules-load.d/ephmfs.conf",
+        guest_img_mount_dir
+    ))?;
     ushell.run(cmd!("sudo guestunmount {}", guest_img_mount_dir))?;
 
     Ok(img_path)
@@ -597,6 +614,7 @@ fn build_guest_kernel(
     let secret = cfg.secret.unwrap();
     let branch = cfg.guest_kernel_branch.unwrap_or("main");
     let kbuild_dir = dir!(guest_kernel_dir, "kbuild");
+    let ephmfs_dir = dir!(guest_kernel_dir, "EphMFS");
 
     let guest_kernel_repo = GitRepo::HttpsPrivate {
         repo: "github.com/BijanT/linux_eph_memory.git",
@@ -691,6 +709,8 @@ fn build_guest_kernel(
 
     ushell
         .run(cmd!("make -j$(nproc) modules LOCALVERSION=-{}", &local_version).cwd(&kbuild_dir))?;
+
+    ushell.run(cmd!("make").cwd(&ephmfs_dir))?;
 
     // Compile perf tool
     let perf_path = dir!(guest_kernel_dir, "tools", "perf");
