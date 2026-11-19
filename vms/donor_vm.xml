@@ -87,5 +87,8 @@ will be replaced with the actual paths by the scripts that use this XML file.
 		<qemu:arg value="node,nodeid=1"/>
 		<qemu:arg value="-device"/>
 		<qemu:arg value="pc-dimm,id=dimm0,memdev=donatable0,node=1"/>
+		<!-- Log information related to ephemeral memory revocations -->
+		<qemu:arg value="-trace"/>
+		<qemu:arg value="eph_mem_*"/>
 	</qemu:commandline>
 </domain>
