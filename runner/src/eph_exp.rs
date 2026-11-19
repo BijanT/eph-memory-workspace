@@ -40,6 +40,10 @@ struct Config {
     donor_workload: Option<Workload>,
     #[name(self.consumer_workload.is_some())]
     consumer_workload: Option<Workload>,
+    #[name(self.donor_delay > 0)]
+    donor_delay: u64,
+    #[name(self.consumer_delay > 0)]
+    consumer_delay: u64,
 
     thp: bool,
     flamegraph: Option<u32>,
@@ -107,6 +111,16 @@ impl GuestPaths {
     }
 }
 
+/// What differs between the VMs in an experiment.
+#[derive(Clone, Copy)]
+struct VmSpec<'a> {
+    domain: &'static str,
+    consumer: bool,
+    workload: &'a Workload,
+    /// Seconds to wait before starting the workload.
+    delay: u64,
+}
+
 struct VmInfo {
     shell: SshShell,
     domain: String,
@@ -119,6 +133,7 @@ struct VmInfo {
     paths: GuestPaths,
     /// Handle for ephemerald. `Some` iff this is the consumer VM.
     ephemerald: Option<spurs::SshSpawnHandle>,
+    workload_delay: u64,
 }
 
 // Clap does not seem to support multiple different subcommands, so to support
@@ -246,6 +261,18 @@ pub fn cli_options() -> clap::Command {
                 .value_parser(parse_workloads)
                 .long_help(format!("The workload to run. One of:\n{}", WORKLOAD_FORMATS)),
         )
+        .arg(
+            arg!(--donor_delay <secs> "Seconds to wait before starting the donor workload")
+                .value_parser(clap::value_parser!(u64))
+                .default_value("0")
+                .requires("donor_workload"),
+        )
+        .arg(
+            arg!(--consumer_delay <secs> "Seconds to wait before starting the consumer workload")
+                .value_parser(clap::value_parser!(u64))
+                .default_value("0")
+                .requires("consumer_workload"),
+        )
         .group(
             clap::ArgGroup::new("workloads")
                 .args(["donor_workload", "consumer_workload"])
@@ -273,6 +300,8 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
     let numactl = sub_m.get_flag("numactl");
     let donor_workload = sub_m.get_one::<Workload>("donor_workload").cloned();
     let consumer_workload = sub_m.get_one::<Workload>("consumer_workload").cloned();
+    let donor_delay = *sub_m.get_one::<u64>("donor_delay").unwrap();
+    let consumer_delay = *sub_m.get_one::<u64>("consumer_delay").unwrap();
 
     // Both VMs mount the same workloads directory, so two Spark workloads
     // would generate their TPC-DS data in the same place.
@@ -298,6 +327,8 @@ pub fn run(sub_m: &clap::ArgMatches) -> Result<(), ScailError> {
         exp: "eph_exp".to_string(),
         donor_workload,
         consumer_workload,
+        donor_delay,
+        consumer_delay,
         thp,
         flamegraph,
         host_flamegraph,
@@ -384,22 +415,30 @@ where
 
     // Start a VM for each requested workload. Each started VM gets the next
     // NAT port.
-    let mut nat_port = crate::START_NAT_PORT;
     let mut vms = Vec::new();
-    for (consumer, workload) in [(false, &cfg.donor_workload), (true, &cfg.consumer_workload)] {
-        if let Some(workload) = workload {
-            let vm = start_vm(
-                &host_shell,
-                cfg,
-                consumer,
-                &login.host,
-                nat_port,
-                &mut tctx,
-                workload,
-            )?;
-            vms.push(vm);
-            nat_port += 1;
-        }
+    let specs = [
+        cfg.donor_workload.as_ref().map(|workload| VmSpec {
+            domain: "donor_vm",
+            consumer: false,
+            workload,
+            delay: cfg.donor_delay,
+        }),
+        cfg.consumer_workload.as_ref().map(|workload| VmSpec {
+            domain: "consumer_vm",
+            consumer: true,
+            workload,
+            delay: cfg.consumer_delay,
+        }),
+    ];
+    for (nat_port, spec) in (crate::START_NAT_PORT..).zip(specs.iter().flatten()) {
+        vms.push(start_vm(
+            &host_shell,
+            cfg,
+            spec,
+            &login.host,
+            nat_port,
+            &mut tctx,
+        )?);
     }
 
     // The background contexts borrow from `vms`, so they are kept in a
@@ -542,23 +581,20 @@ where
 fn start_vm<A>(
     host_shell: &SshShell,
     cfg: &Config,
-    consumer: bool,
+    spec: &VmSpec,
     host: &A,
     host_port: u16,
     tctx: &mut TasksetCtx,
-    workload: &Workload,
 ) -> Result<VmInfo, ScailError>
 where
     A: std::net::ToSocketAddrs + std::fmt::Display + std::fmt::Debug + Clone,
 {
-    const DONOR_DOMAIN: &str = "donor_vm";
-    const CONSUMER_DOMAIN: &str = "consumer_vm";
-
-    let domain = if consumer {
-        CONSUMER_DOMAIN
-    } else {
-        DONOR_DOMAIN
-    };
+    let VmSpec {
+        domain,
+        consumer,
+        workload,
+        delay: workload_delay,
+    } = *spec;
     let vm_log_path = format!("/var/log/libvirt/qemu/{}.log", domain);
 
     // libvirt appends to the domain's log across boots. Truncate it so the
@@ -665,6 +701,7 @@ where
         vm_log_path,
         paths,
         ephemerald,
+        workload_delay,
     })
 }
 
@@ -712,17 +749,24 @@ fn start_vm_bg_tasks<'s>(
 
 fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailError> {
     let paths = &vm_info.paths;
+    let delay = if vm_info.workload_delay > 0 {
+        format!("sleep {}; ", vm_info.workload_delay)
+    } else {
+        String::new()
+    };
 
     let cmd = match vm_info.workload {
         Workload::AllocData(size_gb) => cmd!(
-            "{} ./ubmks/alloc_data {} halt | sudo tee {}",
+            "{}{} ./ubmks/alloc_data {} halt | sudo tee {}",
+            delay,
             vm_info.cmd_prefix,
             size_gb,
             &paths.alloc_data_file
         )
         .cwd(&paths.wkspc),
         Workload::MultiAlloc { size_gb, procs } => cmd!(
-            "{} ./ubmks/multi_alloc {} {} 2>&1 | sudo tee {}",
+            "{}{} ./ubmks/multi_alloc {} {} 2>&1 | sudo tee {}",
+            delay,
             vm_info.cmd_prefix,
             size_gb,
             procs,
@@ -736,7 +780,8 @@ fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailErr
             let spark_sql_bin = dir!(&paths.workloads_dir, "spark", "bin", "spark-sql");
 
             cmd!(
-                "TIMEFORMAT=%3R; {{ time {} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {} ; }} 2> {}",
+                "{}TIMEFORMAT=%3R; {{ time {} {} --driver-memory {}g --database tpcds -f {} 2>&1 | sudo tee {} ; }} 2> {}",
+                delay,
                 vm_info.cmd_prefix,
                 spark_sql_bin,
                 executor_mem_gb,
@@ -747,7 +792,8 @@ fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailErr
             .use_bash()
         }
         Workload::LibEphMemTest { size_gb, wait_time } => cmd!(
-            "{} ./ubmks/libephmem_test {} {} 2>&1 | sudo tee {}",
+            "{}{} ./ubmks/libephmem_test {} {} 2>&1 | sudo tee {}",
+            delay,
             vm_info.cmd_prefix,
             size_gb,
             wait_time,
@@ -766,7 +812,8 @@ fn start_vm_workload(vm_info: &VmInfo) -> Result<spurs::SshSpawnHandle, ScailErr
             );
             let queries = "benchmark/large/tpch-sf100/.*";
             cmd!(
-                "{} {} --out={} --disable-timeout {}",
+                "{}{} {} --out={} --disable-timeout {}",
+                delay,
                 vm_info.cmd_prefix,
                 duckdb_bin,
                 &paths.duckdb_file,
