@@ -200,6 +200,10 @@ where
         shell
     };
 
+    ushell.run(cmd!(
+        "echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"
+    ))?;
+
     libscail::dump_sys_info(&ushell)?;
 
     Ok(ushell)
